@@ -15,6 +15,12 @@
               </div>
         % end
     </div>
+  </div>
+
+  <div class="index-toolbar">
+    % if not user:
+      <h2>Recent Activity Feed</h2>
+    % end
     <div class="repo-search" data-repo-search data-repo-search-url="/-/repos/search">
       <label class="sr-only" for="repo-search-input">Search public repositories</label>
       <input
@@ -35,9 +41,6 @@
   </div>
 
   % if actions:
-    % if not user:
-        <h1>Recent Activity Feed</h1>
-    % end
     <ol class="activity-feed">
       % for action in actions:
         % repo_url = "/" + action["repo_owner_username"] + "/" + action["repo_name"] if action["repo_owner_username"] and action["repo_name"] else ""

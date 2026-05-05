@@ -238,12 +238,6 @@
           title.textContent = result.full_name || `${result.owner_username}/${result.name}`;
           link.append(title);
 
-          if (result.description) {
-            const description = document.createElement("span");
-            description.textContent = result.description;
-            link.append(description);
-          }
-
           meta.textContent = (result.star_count || 0) === 1 ? "1 star" : `${result.star_count || 0} stars`;
           link.append(meta);
 
