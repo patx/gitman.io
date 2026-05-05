@@ -48,3 +48,7 @@ When `GITMAN_DEBUG` is disabled, `SECRET_KEY` must be set to a non-default value
 This v1 stores repositories on local disk. Do not deploy it to ephemeral filesystems unless repository storage is mounted persistently.
 
 SQLite is configured with WAL mode and a busy timeout so a small multi-worker deployment can share one database file. Keep `GITMAN_DB` on a local persistent filesystem used by one host; network or synced filesystems can break SQLite locking semantics and should use a server database instead.
+
+## License
+
+GitMan is licensed under the BSD 3-Clause License. See [LICENSE](https://gitman.io/patx/gitman/src/LICENSE).
