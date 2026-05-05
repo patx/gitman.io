@@ -120,7 +120,7 @@ button, .button {
   gap: .2rem;
   position: absolute;
   right: 0;
-  top: calc(100% + .55rem);
+  top: calc(100% + .9rem);
   z-index: 25;
   width: 20rem;
   max-width: calc(100vw - 2rem);
