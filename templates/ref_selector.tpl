@@ -19,7 +19,7 @@
             href="{{current_url_with_ref(option['ref'])}}"
             data-ref-picker-option
             data-ref-label="{{option['label'].lower()}}"
-            data-ref-initial="{{'true' if option.get('is_initial') or is_selected else 'false'}}"
+            data-ref-initial="{{'true' if option.get('is_initial') else 'false'}}"
             role="menuitem"
             aria-current="{{'page' if is_selected else 'false'}}"
           >

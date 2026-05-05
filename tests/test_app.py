@@ -966,6 +966,10 @@ def test_repo_ref_options_mark_ten_newest_named_refs_for_picker(isolated_app):
         option["is_initial"] for option in options if option["ref"]["type"] == isolated_app.REF_TYPE_TIP
     )
 
+    response = WsgiClient(isolated_app.app).get("/alice/many")
+    assert response.text.count('data-ref-initial="true"') == 10
+    assert '[hidden] { display: none !important; }' in Path("static/styles.css").read_text(encoding="utf-8")
+
 
 def test_repo_ref_search_finds_refs_outside_initial_picker_options(isolated_app):
     owner = create_user("alice")
