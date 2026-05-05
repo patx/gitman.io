@@ -372,6 +372,34 @@ def test_styles_support_system_dark_mode(isolated_app):
     assert 'media="(prefers-color-scheme: dark)"' in response.text
 
 
+def test_index_public_repo_search_finds_repositories_by_fuzzy_name(isolated_app):
+    owner = create_user("alice")
+    other = create_user("bob")
+    isolated_app.create_repository(owner, "gitman", "Local git hosting")
+    isolated_app.create_repository(owner, "api-client", "HTTP integration")
+    isolated_app.create_repository(other, "docs", "GitMan docs should not match by description")
+    client = WsgiClient(isolated_app.app)
+
+    index_response = client.get("/")
+    assert index_response.status_code == 200
+    assert 'data-repo-search-url="/-/repos/search"' in index_response.text
+    assert 'aria-controls="repo-search-results"' in index_response.text
+
+    fuzzy_response = client.get("/-/repos/search?q=gmn")
+    fuzzy_results = json.loads(fuzzy_response.text)["results"]
+    assert fuzzy_response.status_code == 200
+    assert fuzzy_response.header("Content-Type").startswith("application/json")
+    assert [result["full_name"] for result in fuzzy_results] == ["alice/gitman"]
+    assert fuzzy_results[0]["url"] == "/alice/gitman"
+
+    compact_response = client.get(f"/-/repos/search?{urlencode({'q': 'api client'})}")
+    compact_results = json.loads(compact_response.text)["results"]
+    assert [result["full_name"] for result in compact_results] == ["alice/api-client"]
+
+    empty_response = client.get("/-/repos/search")
+    assert json.loads(empty_response.text)["results"] == []
+
+
 def test_csrf_required_for_browser_posts_and_git_is_exempt(isolated_app):
     owner = create_user("alice", password="owner-password")
     isolated_app.create_repository(owner, "demo", "")

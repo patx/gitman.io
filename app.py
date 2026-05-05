@@ -723,6 +723,104 @@ def list_public_repos(limit=100):
         ).fetchall()
 
 
+def fuzzy_match_score(value, query):
+    value = (value or "").lower()
+    query = (query or "").lower()
+    if not value or not query:
+        return None
+    if query == value:
+        return (0, len(value))
+    if value.startswith(query):
+        return (1, len(value))
+    if query in value:
+        return (2, value.index(query), len(value))
+
+    positions = []
+    start = 0
+    for char in query:
+        index = value.find(char, start)
+        if index < 0:
+            return None
+        positions.append(index)
+        start = index + 1
+    return (3, positions[-1] - positions[0], positions[0], len(value))
+
+
+def compact_search_text(value):
+    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+
+
+def repository_search_score(repo, query):
+    query = (query or "").strip().lower()
+    if not query:
+        return None
+
+    name = repo["name"]
+    full_name = f"{repo['owner_username']}/{repo['name']}"
+    query_compact = compact_search_text(query)
+    candidates = [
+        (0, name, query),
+        (1, compact_search_text(name), query_compact),
+        (2, full_name, query),
+        (3, compact_search_text(full_name), query_compact),
+    ]
+
+    scores = []
+    for weight, value, candidate_query in candidates:
+        if not candidate_query:
+            continue
+        score = fuzzy_match_score(value, candidate_query)
+        if score is not None:
+            scores.append((weight, *score))
+    return min(scores) if scores else None
+
+
+def repo_search_result(repo):
+    full_name = f"{repo['owner_username']}/{repo['name']}"
+    result = {
+        "owner_username": repo["owner_username"],
+        "name": repo["name"],
+        "full_name": full_name,
+        "url": f"/{full_name}",
+        "description": text_preview(repo["description"], 120),
+        "updated_at": repo["updated_at"],
+    }
+    if "star_count" in repo.keys():
+        result["star_count"] = repo["star_count"]
+    return result
+
+
+def search_public_repos(query, limit=10):
+    query = (query or "").strip()[:100]
+    if not query:
+        return []
+
+    with db_connect() as conn:
+        repos = conn.execute(
+            """
+            SELECT
+                repositories.*,
+                users.username AS owner_username,
+                (
+                    SELECT COUNT(*)
+                    FROM repo_stars
+                    WHERE repo_stars.repo_id = repositories.id
+                ) AS star_count
+            FROM repositories
+            JOIN users ON users.id = repositories.owner_id
+            ORDER BY repositories.updated_at DESC
+            """
+        ).fetchall()
+
+    matches = []
+    for repo in repos:
+        score = repository_search_score(repo, query)
+        if score is not None:
+            matches.append((score, repo))
+    matches.sort(key=lambda match: (match[0], match[1]["name"], match[1]["owner_username"]))
+    return [repo_search_result(repo) for _, repo in matches[: max(1, min(int(limit), 25))]]
+
+
 def text_preview(value, limit=180):
     text = " ".join((value or "").split())
     if len(text) <= limit:
@@ -2731,6 +2829,12 @@ def favicon():
 @app.route("/")
 def index():
     return render("index.tpl", actions=list_recent_actions(50))
+
+
+@app.route("/-/repos/search")
+def public_repo_search():
+    results = search_public_repos(request.query.get("q", ""))
+    return HTTPResponse(json.dumps({"results": results}), content_type="application/json")
 
 
 @app.route("/signup", method=["GET", "POST"])

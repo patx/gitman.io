@@ -201,5 +201,109 @@
       });
     })();
   </script>
+  <script>
+    (() => {
+      const search = document.querySelector("[data-repo-search]");
+      if (!search) return;
+
+      const input = search.querySelector("[data-repo-search-input]");
+      const menu = search.querySelector("[data-repo-search-results]");
+      const empty = search.querySelector("[data-repo-search-empty]");
+      if (!input || !menu) return;
+
+      let activeToken = 0;
+      let searchTimeout = null;
+
+      const setOpen = (isOpen) => {
+        menu.hidden = !isOpen;
+        input.setAttribute("aria-expanded", isOpen ? "true" : "false");
+      };
+
+      const clearResults = () => {
+        menu.querySelectorAll("[data-repo-search-result]").forEach((result) => result.remove());
+      };
+
+      const renderResults = (results) => {
+        clearResults();
+
+        results.forEach((result) => {
+          const link = document.createElement("a");
+          const title = document.createElement("strong");
+          const meta = document.createElement("small");
+
+          link.className = "repo-search-result";
+          link.href = result.url || "#";
+          link.setAttribute("role", "option");
+          link.dataset.repoSearchResult = "true";
+          title.textContent = result.full_name || `${result.owner_username}/${result.name}`;
+          link.append(title);
+
+          if (result.description) {
+            const description = document.createElement("span");
+            description.textContent = result.description;
+            link.append(description);
+          }
+
+          meta.textContent = (result.star_count || 0) === 1 ? "1 star" : `${result.star_count || 0} stars`;
+          link.append(meta);
+
+          if (empty) {
+            menu.insertBefore(link, empty);
+          } else {
+            menu.append(link);
+          }
+        });
+
+        if (empty) empty.hidden = results.length > 0;
+        setOpen(Boolean(input.value.trim()));
+      };
+
+      const searchRepos = () => {
+        const query = input.value.trim();
+        const token = activeToken + 1;
+        activeToken = token;
+
+        if (!query) {
+          clearResults();
+          if (empty) empty.hidden = true;
+          setOpen(false);
+          return;
+        }
+
+        const url = new URL(search.dataset.repoSearchUrl, window.location.origin);
+        url.searchParams.set("q", query);
+        fetch(url.toString(), { headers: { Accept: "application/json" } })
+          .then((response) => {
+            if (!response.ok) throw new Error("Unable to search repositories.");
+            return response.json();
+          })
+          .then((data) => {
+            if (activeToken !== token) return;
+            renderResults(data.results || []);
+          })
+          .catch(() => {
+            if (activeToken !== token) return;
+            renderResults([]);
+          });
+      };
+
+      input.addEventListener("input", () => {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(searchRepos, 120);
+      });
+
+      input.addEventListener("focus", () => {
+        if (input.value.trim()) searchRepos();
+      });
+
+      document.addEventListener("click", (event) => {
+        if (!search.contains(event.target)) setOpen(false);
+      });
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") setOpen(false);
+      });
+    })();
+  </script>
 </body>
 </html>

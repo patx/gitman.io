@@ -73,6 +73,18 @@ button, .button {
   cursor: pointer;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .site-header, .repo-header, .profile-header, .panel, .auth-card {
   margin-bottom: 1.5rem;
   padding-bottom: 1rem;
@@ -94,6 +106,41 @@ button, .button {
 .link-button { padding: 0; color: var(--link); background: none; border: 0; text-decoration: underline; }
 .repo-tabs .repo-tab { padding-bottom: .2rem; border-bottom: 2px solid transparent; }
 .repo-tabs .repo-tab.active { color: var(--text); font-weight: 700; text-decoration: none; }
+.repo-search {
+  position: relative;
+  width: 22rem;
+  max-width: 100%;
+  margin-left: auto;
+  align-self: flex-start;
+}
+.repo-search-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + .4rem);
+  z-index: 25;
+  width: 26rem;
+  max-width: calc(100vw - 2rem);
+  max-height: 20rem;
+  overflow-y: auto;
+  padding: .35rem;
+  border: 1px solid var(--menu-border);
+  background: var(--surface);
+  box-shadow: 0 .4rem 1.2rem var(--shadow);
+}
+.repo-search-result {
+  display: grid;
+  gap: .1rem;
+  padding: .45rem .5rem;
+  color: var(--text);
+  text-decoration: none;
+}
+.repo-search-result:hover, .repo-search-result:focus {
+  background: var(--ref-hover);
+  text-decoration: none;
+}
+.repo-search-result span { color: var(--detail); overflow-wrap: anywhere; }
+.repo-search-result small, .repo-search-empty { color: var(--muted); }
+.repo-search-empty { margin: 0; padding: .45rem .5rem; }
 .ref-picker { position: relative; display: inline-block; }
 .ref-picker-menu {
   position: absolute;
@@ -168,5 +215,7 @@ button, .button {
 
 @media (max-width: 760px) {
   body { margin-top: 1rem; }
+  .repo-search { width: 100%; }
+  .repo-search-menu { left: 0; right: auto; width: 100%; }
   .grid.two, .commit-list li, .tag-list li { grid-template-columns: 1fr; }
 }

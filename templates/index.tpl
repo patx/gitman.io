@@ -15,6 +15,23 @@
               </div>
         % end
     </div>
+    <div class="repo-search" data-repo-search data-repo-search-url="/-/repos/search">
+      <label class="sr-only" for="repo-search-input">Search public repositories</label>
+      <input
+        id="repo-search-input"
+        class="repo-search-input"
+        type="search"
+        placeholder="Search repositories"
+        autocomplete="off"
+        data-repo-search-input
+        aria-haspopup="listbox"
+        aria-expanded="false"
+        aria-controls="repo-search-results"
+      >
+      <div id="repo-search-results" class="repo-search-menu" role="listbox" data-repo-search-results hidden>
+        <p class="repo-search-empty" data-repo-search-empty hidden>No repositories found.</p>
+      </div>
+    </div>
   </div>
 
   % if actions:
