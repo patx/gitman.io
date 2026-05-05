@@ -5,7 +5,7 @@
 % active_tab = get("repo_active_tab", "")
 % show_ref_picker = get("show_ref_picker", False)
 % if show_ref_picker and selected_ref and ref_options:
-  <div class="ref-picker" data-ref-picker>
+  <div class="ref-picker" data-ref-picker data-ref-search-url="/{{repo['owner_username']}}/{{repo['name']}}/refs/search">
     <button class="ref-picker-toggle" type="button" aria-haspopup="true" aria-expanded="false">
       <span>{{selected_ref_label}}</span>
     </button>

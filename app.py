@@ -3,6 +3,7 @@ import datetime as dt
 import hashlib
 import hmac
 import html
+import json
 import mimetypes
 import os
 import re
@@ -1507,6 +1508,7 @@ def commit_log(path, limit=50, revision=None):
         raise GitCommandError(completed.stderr.strip() or "Unable to read commit log.", completed.returncode)
     commits = []
     for record in completed.stdout.split("\x1e"):
+        record = record.strip("\n")
         if not record:
             continue
         parts = record.split("\x1f")
@@ -1520,6 +1522,41 @@ def commit_log(path, limit=50, revision=None):
                 "author": parts[2],
                 "date": parts[3],
                 "summary": parts[4],
+            }
+        )
+    return commits
+
+
+def all_commit_refs(path):
+    format_arg = "%H%x1f%h%x1f%ad%x1f%s%x1e"
+    completed = run_git(
+        ["log", "--all", "--date=iso-strict", f"--format={format_arg}"],
+        cwd=path,
+        check=False,
+    )
+    if completed.returncode != 0:
+        stderr = (completed.stderr or "").lower()
+        if "does not have any commits" in stderr or "bad revision" in stderr:
+            return []
+        raise GitCommandError(completed.stderr.strip() or "Unable to search commits.", completed.returncode)
+
+    commits = []
+    for record in completed.stdout.split("\x1e"):
+        record = record.strip("\n")
+        if not record:
+            continue
+        parts = record.split("\x1f")
+        if len(parts) != 4:
+            continue
+        commits.append(
+            {
+                "type": REF_TYPE_COMMIT,
+                "name": parts[0],
+                "label": f"commit {parts[1]} {parts[3]}".strip(),
+                "node": parts[0],
+                "short_node": parts[1],
+                "date": parts[2],
+                "summary": parts[3],
             }
         )
     return commits
@@ -1835,6 +1872,44 @@ def ref_option_from_ref(ref, repo_id=None):
         "label": ref_option_label(ref),
         "ref": ref,
     }
+
+
+def ref_search_result(ref):
+    result = {
+        "type": ref["type"],
+        "name": ref.get("name", ""),
+        "label": ref.get("label") or ref_option_label(ref),
+    }
+    if ref.get("node"):
+        result["node"] = ref["node"]
+    if ref.get("short_node"):
+        result["short_node"] = ref["short_node"]
+    return result
+
+
+def ref_matches_query(ref, query):
+    label = (ref.get("label") or ref_option_label(ref)).lower()
+    name = (ref.get("name") or "").lower()
+    if query in label or query in name:
+        return True
+    if ref["type"] == REF_TYPE_COMMIT:
+        return (
+            query in (ref.get("node") or "").lower()
+            or query in (ref.get("short_node") or "").lower()
+            or query in (ref.get("summary") or "").lower()
+        )
+    return False
+
+
+def search_repo_refs(path, query):
+    query = (query or "").strip().lower()
+    if not query:
+        return []
+
+    refs = list_repo_branches(path)
+    refs.extend(list_repo_tags(path))
+    refs.extend(all_commit_refs(path))
+    return [ref_search_result(ref) for ref in refs if ref_matches_query(ref, query)]
 
 
 def repo_ref_options(path, include_closed_branches=True, include_tip=True, include_tags=True):
@@ -3037,6 +3112,16 @@ def repo_branches(owner, repo_name):
         clone_url=clone_url(owner, repo_name),
         **repo_page_context(repo, path),
     )
+
+
+@app.route("/<owner>/<repo_name>/refs/search")
+def repo_ref_search(owner, repo_name):
+    repo = get_repo(owner, repo_name)
+    if not repo:
+        abort(404, "Repository not found.")
+    path = repo_path(owner, repo_name)
+    results = search_repo_refs(path, request.query.get("q", ""))
+    return HTTPResponse(json.dumps({"results": results}), content_type="application/json")
 
 
 @app.route("/<owner>/<repo_name>/commits/<node>", method=["GET", "POST"])

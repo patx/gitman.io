@@ -49,18 +49,18 @@
       const pickers = document.querySelectorAll("[data-ref-picker]");
       if (!pickers.length) return;
 
-      const applyFilter = (picker) => {
-        const search = picker.querySelector("[data-ref-picker-search]");
+      const clearSearchResults = (picker) => {
+        picker.querySelectorAll("[data-ref-picker-search-result]").forEach((option) => option.remove());
+      };
+
+      const showInitialOptions = (picker) => {
         const options = picker.querySelectorAll("[data-ref-picker-option]");
         const empty = picker.querySelector("[data-ref-picker-empty]");
-        const query = search ? search.value.trim().toLowerCase() : "";
         let visibleCount = 0;
 
+        clearSearchResults(picker);
         options.forEach((option) => {
-          const label = option.dataset.refLabel || "";
-          const isVisible = query
-            ? label.includes(query)
-            : option.dataset.refInitial === "true";
+          const isVisible = option.dataset.refInitial === "true";
           option.hidden = !isVisible;
           if (isVisible) visibleCount += 1;
         });
@@ -68,10 +68,78 @@
         if (empty) empty.hidden = visibleCount > 0;
       };
 
+      const buildRefUrl = (result) => {
+        const url = new URL(window.location.href);
+        ["ref", "ref_type", "ref_value"].forEach((key) => url.searchParams.delete(key));
+        const type = result.type || "tip";
+        url.searchParams.set("ref_type", type);
+        if (type !== "tip") url.searchParams.set("ref", result.name || "");
+        return `${url.pathname}${url.search}${url.hash}`;
+      };
+
+      const renderSearchResults = (picker, results) => {
+        const empty = picker.querySelector("[data-ref-picker-empty]");
+        const options = picker.querySelectorAll("[data-ref-picker-option]");
+
+        clearSearchResults(picker);
+        options.forEach((option) => {
+          option.hidden = true;
+        });
+
+        results.forEach((result) => {
+          const option = document.createElement("a");
+          const label = document.createElement("span");
+          option.className = "ref-picker-option";
+          option.href = buildRefUrl(result);
+          option.setAttribute("role", "menuitem");
+          option.dataset.refPickerSearchResult = "true";
+          label.textContent = result.label || result.name || "";
+          option.append(label);
+          empty.parentElement.insertBefore(option, empty);
+        });
+
+        if (empty) empty.hidden = results.length > 0;
+      };
+
+      const searchRefs = (picker) => {
+        const search = picker.querySelector("[data-ref-picker-search]");
+        const query = search ? search.value.trim() : "";
+        const token = (picker._refPickerSearchToken || 0) + 1;
+        picker._refPickerSearchToken = token;
+
+        if (!query) {
+          showInitialOptions(picker);
+          return;
+        }
+
+        const empty = picker.querySelector("[data-ref-picker-empty]");
+        picker.querySelectorAll("[data-ref-picker-option]").forEach((option) => {
+          option.hidden = true;
+        });
+        clearSearchResults(picker);
+        if (empty) empty.hidden = true;
+
+        const url = new URL(picker.dataset.refSearchUrl, window.location.origin);
+        url.searchParams.set("q", query);
+        fetch(url.toString(), { headers: { Accept: "application/json" } })
+          .then((response) => {
+            if (!response.ok) throw new Error("Unable to search refs.");
+            return response.json();
+          })
+          .then((data) => {
+            if (picker._refPickerSearchToken !== token) return;
+            renderSearchResults(picker, data.results || []);
+          })
+          .catch(() => {
+            if (picker._refPickerSearchToken !== token) return;
+            renderSearchResults(picker, []);
+          });
+      };
+
       const resetFilter = (picker) => {
         const search = picker.querySelector("[data-ref-picker-search]");
         if (search) search.value = "";
-        applyFilter(picker);
+        searchRefs(picker);
       };
 
       const closePicker = (picker) => {
@@ -113,7 +181,7 @@
 
         if (search) {
           search.addEventListener("input", () => {
-            applyFilter(picker);
+            searchRefs(picker);
           });
         }
       });

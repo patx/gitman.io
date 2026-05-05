@@ -1,5 +1,6 @@
 import atexit
 import base64
+import json
 from http.cookies import SimpleCookie
 from io import BytesIO, StringIO
 import os
@@ -963,6 +964,62 @@ def test_repo_ref_options_mark_ten_newest_named_refs_for_picker(isolated_app):
     assert len(initial_options) == 10
     assert not any(
         option["is_initial"] for option in options if option["ref"]["type"] == isolated_app.REF_TYPE_TIP
+    )
+
+
+def test_repo_ref_search_finds_refs_outside_initial_picker_options(isolated_app):
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "many", "")
+    path = isolated_app.repo_path("alice", "many")
+    node = commit_file(path, "README.md", "# Many\n", message="initial", user=owner["username"])
+    for index in range(12):
+        isolated_app.run_git(["tag", f"v{index:02d}", node], cwd=path)
+        isolated_app.run_git(["update-ref", f"refs/heads/topic{index:02d}", node], cwd=path)
+
+    initial_labels = {
+        option["label"]
+        for option in isolated_app.repo_ref_options(path)
+        if option["is_initial"]
+    }
+    assert "branch topic00" not in initial_labels
+    assert "tag v00" not in initial_labels
+
+    client = WsgiClient(isolated_app.app)
+    branch_response = client.get("/alice/many/refs/search?q=topic00")
+    tag_response = client.get("/alice/many/refs/search?q=v00")
+    empty_response = client.get("/alice/many/refs/search")
+
+    assert branch_response.status_code == 200
+    assert branch_response.header("Content-Type").startswith("application/json")
+    assert any(
+        result["type"] == isolated_app.REF_TYPE_BRANCH and result["name"] == "topic00"
+        for result in json.loads(branch_response.text)["results"]
+    )
+    assert any(
+        result["type"] == isolated_app.REF_TYPE_TAG and result["name"] == "v00"
+        for result in json.loads(tag_response.text)["results"]
+    )
+    assert json.loads(empty_response.text)["results"] == []
+
+
+def test_repo_ref_search_finds_commits_by_subject_and_sha_across_all_refs(isolated_app):
+    owner = create_user("alice")
+    nodes = create_repo_with_refs(owner)
+    client = WsgiClient(isolated_app.app)
+
+    subject_response = client.get(f"/alice/demo/refs/search?{urlencode({'q': 'old branch work'})}")
+    sha_response = client.get(f"/alice/demo/refs/search?{urlencode({'q': nodes['old_node'][:12]})}")
+
+    assert subject_response.status_code == 200
+    assert any(
+        result["type"] == isolated_app.REF_TYPE_COMMIT
+        and result["name"] == nodes["old_node"]
+        and "old branch work" in result["label"]
+        for result in json.loads(subject_response.text)["results"]
+    )
+    assert any(
+        result["type"] == isolated_app.REF_TYPE_COMMIT and result["name"] == nodes["old_node"]
+        for result in json.loads(sha_response.text)["results"]
     )
 
 
