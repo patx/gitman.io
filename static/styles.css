@@ -115,7 +115,8 @@ button, .button {
 .panel-heading > .repo-search { margin-left: auto; }
 .hero-actions .repo-search-menu { left: 0; right: auto; }
 .repo-search-menu {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: .05rem;
   position: absolute;
   right: 0;

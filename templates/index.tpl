@@ -18,7 +18,7 @@
                   style="width:350px;"
                   class="repo-search-input"
                   type="search"
-                  placeholder="Search repositories"
+                  placeholder="Search all repositories"
                   autocomplete="off"
                   data-repo-search-input
                   aria-haspopup="listbox"
