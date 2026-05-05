@@ -227,24 +227,26 @@
         clearResults();
 
         results.forEach((result) => {
+          const item = document.createElement("div");
           const link = document.createElement("a");
           const title = document.createElement("strong");
           const meta = document.createElement("small");
 
-          link.className = "repo-search-result";
+          item.className = "repo-search-result";
+          item.dataset.repoSearchResult = "true";
+          link.className = "repo-search-link";
           link.href = result.url || "#";
           link.setAttribute("role", "option");
-          link.dataset.repoSearchResult = "true";
           title.textContent = result.full_name || `${result.owner_username}/${result.name}`;
-          link.append(title);
 
           meta.textContent = (result.star_count || 0) === 1 ? "1 star" : `${result.star_count || 0} stars`;
-          link.append(meta);
+          link.append(title, document.createTextNode(" "), meta);
+          item.append(link);
 
           if (empty) {
-            menu.insertBefore(link, empty);
+            menu.insertBefore(item, empty);
           } else {
-            menu.append(link);
+            menu.append(item);
           }
         });
 

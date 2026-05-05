@@ -132,6 +132,9 @@ button, .button {
   box-shadow: 0 .4rem 1.2rem var(--shadow);
 }
 .repo-search-result {
+  display: block;
+}
+.repo-search-link {
   display: flex;
   justify-content: space-between;
   gap: .75rem;
@@ -141,21 +144,21 @@ button, .button {
   color: var(--text);
   text-decoration: none;
 }
-.repo-search-result:hover, .repo-search-result:focus {
+.repo-search-link:hover, .repo-search-link:focus {
   background: var(--ref-hover);
   text-decoration: none;
 }
-.repo-search-result strong {
+.repo-search-link strong {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.repo-search-result small {
+.repo-search-link small {
   flex: 0 0 auto;
   white-space: nowrap;
 }
-.repo-search-result small, .repo-search-empty { color: var(--muted); }
+.repo-search-link small, .repo-search-empty { color: var(--muted); }
 .repo-search-empty { margin: 0; padding: .3rem .4rem; }
 .ref-picker { position: relative; display: inline-block; }
 .ref-picker-menu {
