@@ -99,15 +99,6 @@ button, .button {
 }
 
 .site-header, .panel-heading, .repo-header { justify-content: space-between; }
-.index-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: .75rem;
-  margin: -.35rem 0 1rem;
-  flex-wrap: wrap;
-}
-.index-toolbar h2 { margin: 0; }
 .repo-title-row { display: flex; gap: .75rem; align-items: baseline; flex-wrap: wrap; }
 .repo-title-row h1 { margin-bottom: 0; }
 .brand { color: var(--text); font-weight: 700; text-decoration: none; }
@@ -119,10 +110,13 @@ button, .button {
   position: relative;
   width: 18rem;
   max-width: 100%;
-  margin-left: auto;
   align-self: flex-start;
 }
+.panel-heading > .repo-search { margin-left: auto; }
+.hero-actions .repo-search-menu { left: 0; right: auto; }
 .repo-search-menu {
+  display: grid;
+  gap: .05rem;
   position: absolute;
   right: 0;
   top: calc(100% + .4rem);
@@ -141,6 +135,7 @@ button, .button {
   justify-content: space-between;
   gap: .75rem;
   align-items: baseline;
+  width: 100%;
   padding: .3rem .4rem;
   color: var(--text);
   text-decoration: none;

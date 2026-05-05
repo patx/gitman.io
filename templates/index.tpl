@@ -6,6 +6,25 @@
         % if user:
             <p class="eyebrow">Recent activity</p>
             <h1>Feed</h1>
+            <div class="hero-actions">
+              <div class="repo-search" data-repo-search data-repo-search-url="/-/repos/search">
+                <label class="sr-only" for="repo-search-input">Search public repositories</label>
+                <input
+                  id="repo-search-input"
+                  class="repo-search-input"
+                  type="search"
+                  placeholder="Search repositories"
+                  autocomplete="off"
+                  data-repo-search-input
+                  aria-haspopup="listbox"
+                  aria-expanded="false"
+                  aria-controls="repo-search-results"
+                >
+                <div id="repo-search-results" class="repo-search-menu" role="listbox" data-repo-search-results hidden>
+                  <p class="repo-search-empty" data-repo-search-empty hidden>No repositories found.</p>
+                </div>
+              </div>
+            </div>
         % else:
             <p class ="eyebrow">Git hosting</p>
             <h1>Free Git repository hosting for open source software</h1>
@@ -17,30 +36,10 @@
     </div>
   </div>
 
-  <div class="index-toolbar">
-    % if not user:
-      <h2>Recent Activity Feed</h2>
-    % end
-    <div class="repo-search" data-repo-search data-repo-search-url="/-/repos/search">
-      <label class="sr-only" for="repo-search-input">Search public repositories</label>
-      <input
-        id="repo-search-input"
-        class="repo-search-input"
-        type="search"
-        placeholder="Search repositories"
-        autocomplete="off"
-        data-repo-search-input
-        aria-haspopup="listbox"
-        aria-expanded="false"
-        aria-controls="repo-search-results"
-      >
-      <div id="repo-search-results" class="repo-search-menu" role="listbox" data-repo-search-results hidden>
-        <p class="repo-search-empty" data-repo-search-empty hidden>No repositories found.</p>
-      </div>
-    </div>
-  </div>
-
   % if actions:
+    % if not user:
+        <h1>Recent Activity Feed</h1>
+    % end
     <ol class="activity-feed">
       % for action in actions:
         % repo_url = "/" + action["repo_owner_username"] + "/" + action["repo_name"] if action["repo_owner_username"] and action["repo_name"] else ""

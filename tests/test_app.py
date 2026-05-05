@@ -380,6 +380,11 @@ def test_index_public_repo_search_finds_repositories_by_fuzzy_name(isolated_app)
     isolated_app.create_repository(other, "docs", "GitMan docs should not match by description")
     client = WsgiClient(isolated_app.app)
 
+    anonymous_index_response = client.get("/")
+    assert anonymous_index_response.status_code == 200
+    assert 'data-repo-search-url="/-/repos/search"' not in anonymous_index_response.text
+
+    login_client(client, "alice")
     index_response = client.get("/")
     assert index_response.status_code == 200
     assert 'data-repo-search-url="/-/repos/search"' in index_response.text
