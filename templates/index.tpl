@@ -3,10 +3,15 @@
 <section class="panel">
   <div class="panel-heading">
     <div>
-        % if user:
-            <p class="eyebrow">Recent activity</p>
-            <h1>Feed</h1>
-            <div class="hero-actions">
+            <p class ="eyebrow">Git hosting</p>
+            <h1>Free Git repository hosting for open source software</h1>
+            % if not user:
+              <div class="hero-actions" style="margin-bottom:50px;">
+                <a class="button" href="/signup">Create an account</a>
+                <a class="button secondary" href="/login">Log in</a>
+              </div>
+            % else:
+              <div class="hero-actions">
               <div class="repo-search" data-repo-search data-repo-search-url="/-/repos/search">
                 <label class="sr-only" for="repo-search-input">Search public repositories</label>
                 <input
@@ -24,22 +29,13 @@
                   <p class="repo-search-empty" data-repo-search-empty hidden>No repositories found.</p>
                 </div>
               </div>
-            </div>
-        % else:
-            <p class ="eyebrow">Git hosting</p>
-            <h1>Free Git repository hosting for open source software</h1>
-              <div class="hero-actions" style="margin-bottom:50px;">
-                <a class="button" href="/signup">Create an account</a>
-                <a class="button secondary" href="/login">Log in</a>
               </div>
-        % end
+            % end
     </div>
   </div>
 
   % if actions:
-    % if not user:
         <h1>Recent Activity Feed</h1>
-    % end
     <ol class="activity-feed">
       % for action in actions:
         % repo_url = "/" + action["repo_owner_username"] + "/" + action["repo_name"] if action["repo_owner_username"] and action["repo_name"] else ""
