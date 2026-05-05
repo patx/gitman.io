@@ -25,7 +25,7 @@
                   aria-expanded="false"
                   aria-controls="repo-search-results"
                 >
-                <div id="repo-search-results" class="repo-search-menu" role="listbox" data-repo-search-results hidden>
+                <div id="repo-search-results" style="margin-bottom:10px;" class="repo-search-menu" role="listbox" data-repo-search-results hidden>
                   <p class="repo-search-empty" data-repo-search-empty hidden>No repositories found.</p>
                 </div>
               </div>
