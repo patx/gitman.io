@@ -1934,6 +1934,10 @@ def repo_ref_options(path, include_closed_branches=True, include_tip=True, inclu
     return options
 
 
+def repo_ref_picker_options(path):
+    return [option for option in repo_ref_options(path) if option.get("is_initial")]
+
+
 def source_repo_ref_options(source_repo, include_tip=True):
     path = repo_path(source_repo["owner_username"], source_repo["name"])
     options = repo_ref_options(path, include_closed_branches=True, include_tip=include_tip, include_tags=False)
@@ -2541,7 +2545,7 @@ def repo_page_context(repo, path=None, selected_ref=None):
         "source_repo": source_repo,
         "selected_ref": selected_ref,
         "selected_ref_label": ref_option_label(selected_ref) if selected_ref else "",
-        "ref_options": repo_ref_options(path) if show_ref_picker else [],
+        "ref_options": repo_ref_picker_options(path) if show_ref_picker else [],
         "selected_ref_value": ref_option_value(
             selected_ref.get("type", REF_TYPE_TIP),
             selected_ref.get("name", ""),

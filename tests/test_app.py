@@ -967,8 +967,31 @@ def test_repo_ref_options_mark_ten_newest_named_refs_for_picker(isolated_app):
     )
 
     response = WsgiClient(isolated_app.app).get("/alice/many")
+    assert response.text.count('data-ref-label="') == 10
     assert response.text.count('data-ref-initial="true"') == 10
+    assert 'data-ref-label="tag v00"' not in response.text
     assert '[hidden] { display: none !important; }' in Path("static/styles.css").read_text(encoding="utf-8")
+
+
+def test_repo_ref_picker_limits_branch_recents_but_searches_all_branches(isolated_app):
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "branches", "")
+    path = isolated_app.repo_path("alice", "branches")
+    node = commit_file(path, "README.md", "# Branches\n", message="initial", user=owner["username"])
+    for index in range(12):
+        isolated_app.run_git(["update-ref", f"refs/heads/topic{index:02d}", node], cwd=path)
+
+    response = WsgiClient(isolated_app.app).get("/alice/branches")
+    assert response.text.count('data-ref-label="') == 10
+    assert response.text.count('data-ref-initial="true"') == 10
+    assert 'data-ref-label="branch topic00"' not in response.text
+
+    search_response = WsgiClient(isolated_app.app).get("/alice/branches/refs/search?q=topic00")
+    assert search_response.status_code == 200
+    assert any(
+        result["type"] == isolated_app.REF_TYPE_BRANCH and result["name"] == "topic00"
+        for result in json.loads(search_response.text)["results"]
+    )
 
 
 def test_repo_ref_search_finds_refs_outside_initial_picker_options(isolated_app):

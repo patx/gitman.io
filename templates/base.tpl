@@ -62,6 +62,7 @@
         options.forEach((option) => {
           const isVisible = option.dataset.refInitial === "true";
           option.hidden = !isVisible;
+          option.style.display = isVisible ? "" : "none";
           if (isVisible) visibleCount += 1;
         });
 
@@ -84,6 +85,7 @@
         clearSearchResults(picker);
         options.forEach((option) => {
           option.hidden = true;
+          option.style.display = "none";
         });
 
         results.forEach((result) => {
@@ -115,6 +117,7 @@
         const empty = picker.querySelector("[data-ref-picker-empty]");
         picker.querySelectorAll("[data-ref-picker-option]").forEach((option) => {
           option.hidden = true;
+          option.style.display = "none";
         });
         clearSearchResults(picker);
         if (empty) empty.hidden = true;
