@@ -11,9 +11,8 @@
                 <a class="button secondary" href="/login">Log in</a>
               </div>
             % else:
-              <div class="hero-actions">
+              <div class="hero-actions" style="margin-bottom:50px;">
               <div class="repo-search" data-repo-search data-repo-search-url="/-/repos/search">
-                <label class="sr-only" for="repo-search-input">Search public repositories</label>
                 <input
                   id="repo-search-input"
                   class="repo-search-input"
