@@ -15,6 +15,7 @@
               <div class="repo-search" data-repo-search data-repo-search-url="/-/repos/search">
                 <input
                   id="repo-search-input"
+                  style="width:350px;"
                   class="repo-search-input"
                   type="search"
                   placeholder="Search repositories"
