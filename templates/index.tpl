@@ -1,0 +1,53 @@
+% rebase("base.tpl", title="GitMan activity", user=user, error=error, notice=notice)
+
+<section class="panel">
+  <div class="panel-heading">
+    <div>
+        % if user:
+            <p class="eyebrow">Recent activity</p>
+            <h1>Feed</h1>
+        % else:
+            <p class ="eyebrow">Git hosting</p>
+            <h1>Free Git repository hosting for open source software</h1>
+              <div class="hero-actions" style="margin-bottom:50px;">
+                <a class="button" href="/signup">Create an account</a>
+                <a class="button secondary" href="/login">Log in</a>
+              </div>
+        % end
+    </div>
+  </div>
+
+  % if actions:
+    % if not user:
+        <h1>Recent Activity Feed</h1>
+    % end
+    <ol class="activity-feed">
+      % for action in actions:
+        % repo_url = "/" + action["repo_owner_username"] + "/" + action["repo_name"] if action["repo_owner_username"] and action["repo_name"] else ""
+        % show_repo_context = repo_url and action["target_url"] != repo_url
+        <li>
+          <p class="activity-title">
+            % if action["actor_url"]:
+              <strong><a href="{{action['actor_url']}}">{{action["actor_label"]}}</a></strong>
+            % else:
+              <strong>{{action["actor_label"]}}</strong>
+            % end
+            {{action["summary"]}}
+            <a href="{{action['target_url']}}">{{action["target_label"]}}</a>
+          </p>
+          <p class="muted">
+            % if show_repo_context:
+              in <a href="{{repo_url}}">{{action["repo_owner_username"]}}/{{action["repo_name"]}}</a> ·
+            % end
+            {{action["occurred_at"]}}
+          </p>
+          % if action["detail"]:
+            <p class="activity-detail">{{!render_markdown_links(action["detail"])}}</p>
+          % end
+        </li>
+      % end
+    </ol>
+  % else:
+    <p class="empty">No activity yet.</p>
+  % end
+</section>

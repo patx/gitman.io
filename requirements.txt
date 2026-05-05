@@ -1,0 +1,4 @@
+bottle>=0.13,<0.14
+bleach>=6.1,<7
+Markdown>=3.8,<4
+gunicorn

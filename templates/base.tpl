@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{title or "GitMan"}}</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/icon.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/icon.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/icon.png">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/"><img src="/static/logo.png" style="max-height:36px;"></a>
+    <nav class="nav">
+      % if user:
+        <a href="/{{user['username']}}">{{user['username']}}</a>
+        <a href="/new">New repo</a>
+        <form action="/logout" method="post">
+          {{!csrf_field()}}
+          <button class="link-button" type="submit">Log out</button>
+        </form>
+      % else:
+        <a href="/login">Log in</a>
+        <a class="button small" href="/signup">Sign up</a>
+      % end
+    </nav>
+  </header>
+
+  <main class="page">
+    % if error:
+      <div class="alert">{{error}}</div>
+    % end
+    % if notice:
+      <div class="notice">{{notice}}</div>
+    % end
+    {{!base}}
+  </main>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script>
+    if (window.hljs) {
+      document.querySelectorAll("pre code").forEach((block) => hljs.highlightElement(block));
+    }
+  </script>
+  <script>
+    (() => {
+      const pickers = document.querySelectorAll("[data-ref-picker]");
+      if (!pickers.length) return;
+
+      const applyFilter = (picker) => {
+        const search = picker.querySelector("[data-ref-picker-search]");
+        const options = picker.querySelectorAll("[data-ref-picker-option]");
+        const empty = picker.querySelector("[data-ref-picker-empty]");
+        const query = search ? search.value.trim().toLowerCase() : "";
+        let visibleCount = 0;
+
+        options.forEach((option) => {
+          const label = option.dataset.refLabel || "";
+          const isVisible = query
+            ? label.includes(query)
+            : option.dataset.refInitial === "true";
+          option.hidden = !isVisible;
+          if (isVisible) visibleCount += 1;
+        });
+
+        if (empty) empty.hidden = visibleCount > 0;
+      };
+
+      const resetFilter = (picker) => {
+        const search = picker.querySelector("[data-ref-picker-search]");
+        if (search) search.value = "";
+        applyFilter(picker);
+      };
+
+      const closePicker = (picker) => {
+        const button = picker.querySelector(".ref-picker-toggle");
+        const menu = picker.querySelector("[data-ref-picker-menu]");
+        if (!menu || menu.hidden) return;
+        menu.hidden = true;
+        if (button) button.setAttribute("aria-expanded", "false");
+      };
+
+      const openPicker = (picker) => {
+        pickers.forEach((other) => {
+          if (other !== picker) closePicker(other);
+        });
+        const button = picker.querySelector(".ref-picker-toggle");
+        const menu = picker.querySelector("[data-ref-picker-menu]");
+        const search = picker.querySelector("[data-ref-picker-search]");
+        if (!menu) return;
+        resetFilter(picker);
+        menu.hidden = false;
+        if (button) button.setAttribute("aria-expanded", "true");
+        if (search) search.focus();
+      };
+
+      pickers.forEach((picker) => {
+        const button = picker.querySelector(".ref-picker-toggle");
+        const search = picker.querySelector("[data-ref-picker-search]");
+
+        if (button) {
+          button.addEventListener("click", () => {
+            const menu = picker.querySelector("[data-ref-picker-menu]");
+            if (menu && menu.hidden) {
+              openPicker(picker);
+            } else {
+              closePicker(picker);
+            }
+          });
+        }
+
+        if (search) {
+          search.addEventListener("input", () => {
+            applyFilter(picker);
+          });
+        }
+      });
+
+      document.addEventListener("click", (event) => {
+        pickers.forEach((picker) => {
+          if (!picker.contains(event.target)) closePicker(picker);
+        });
+      });
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        pickers.forEach(closePicker);
+      });
+    })();
+  </script>
+</body>
+</html>
