@@ -76,18 +76,14 @@ pre code.hljs { padding: 0; background: transparent; }
   min-width: 0;
   padding: 2.1rem .6rem .6rem;
 }
-.line-numbers {
-  display: flex;
+.copyable-code pre.line-numbers {
   flex: 0 0 auto;
-  flex-direction: column;
+  overflow: hidden;
   padding: 2.1rem .55rem .6rem .6rem;
   color: var(--muted);
   text-align: right;
   user-select: none;
   border-right: 1px solid var(--border);
-}
-.line-numbers span {
-  display: block;
 }
 .copy-button {
   position: absolute;
