@@ -62,9 +62,6 @@
       <p class="muted">Create this DNS TXT record before verifying:</p>
       <pre>{{pages_settings["txt_name"]}}
 {{pages_settings["txt_value"]}}</pre>
-      % if custom_domain and custom_domain["status"]:
-        <p class="muted">{{custom_domain["status"]}}</p>
-      % end
       <form method="post">
         {{!csrf_field()}}
         <input type="hidden" name="action" value="verify_custom_domain">
