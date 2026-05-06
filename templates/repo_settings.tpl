@@ -24,6 +24,50 @@
 </section>
 
 <section class="panel">
+  <h2>Pages</h2>
+  <p class="muted">Pages URL: <a href="{{pages_settings['url']}}">{{pages_settings["url"]}}</a></p>
+  % if pages_settings["docs_publishable"]:
+    <form method="post">
+      {{!csrf_field()}}
+      <input type="hidden" name="action" value="update_pages">
+      <label>
+        <input type="checkbox" name="pages_docs_enabled" value="1"{{" checked" if pages_settings["docs_enabled"] else ""}}>
+        Publish this repository's docs/ directory at {{pages_settings["url"]}}
+      </label>
+      <button class="button" type="submit">Save Pages settings</button>
+    </form>
+  % else:
+    <p>Push static site files to this repository root to publish the user Pages site.</p>
+  % end
+
+  % if pages_settings["is_user_site_repo"]:
+    <h3>Custom domain</h3>
+    % if pages_settings["cname_error"]:
+      <p class="alert">{{pages_settings["cname_error"]}}</p>
+    % elif pages_settings["cname_domain"]:
+      <p>Root CNAME: <strong>{{pages_settings["cname_domain"]}}</strong></p>
+      <p class="muted">Create this DNS TXT record before verifying:</p>
+      <p><code>{{pages_settings["txt_name"]}}</code></p>
+      <p><code>{{pages_settings["txt_value"]}}</code></p>
+      % custom_domain = pages_settings["custom_domain"]
+      % if custom_domain and custom_domain["verified_at"]:
+        <p class="notice">Verified {{custom_domain["verified_at"]}}.</p>
+      % end
+      % if custom_domain and custom_domain["status"]:
+        <p class="muted">{{custom_domain["status"]}}</p>
+      % end
+      <form method="post">
+        {{!csrf_field()}}
+        <input type="hidden" name="action" value="verify_custom_domain">
+        <button class="button" type="submit">Verify DNS</button>
+      </form>
+    % else:
+      <p class="muted">Add a root CNAME file to this repository to configure a custom domain.</p>
+    % end
+  % end
+</section>
+
+<section class="panel">
   <h2>Contributors</h2>
   % if contributors:
     <ul class="clean-list">

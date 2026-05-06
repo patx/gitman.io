@@ -20,6 +20,11 @@ from wsgiref.simple_server import WSGIServer
 
 import bleach
 import markdown
+try:
+    import dns.exception
+    import dns.resolver
+except ImportError:
+    dns = None
 from bottle import (
     Bottle,
     HTTPResponse,
@@ -62,12 +67,14 @@ MAX_FORM_BYTES = env_int("GITMAN_MAX_FORM_BYTES", 64 * 1024)
 MAX_RENDER_BYTES = env_int("GITMAN_MAX_RENDER_BYTES", 256 * 1024)
 MAX_GIT_RESPONSE_BYTES = env_int("GITMAN_MAX_GIT_RESPONSE_BYTES", 256 * 1024 * 1024)
 GIT_BINARY = os.environ.get("GITMAN_GIT_BINARY", "git")
+PAGES_DOMAIN = os.environ.get("GITMAN_PAGES_DOMAIN", "gitman.io").strip().lower().rstrip(".")
 DEFAULT_EXEC_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 RATE_LIMIT_ENABLED = env_bool("GITMAN_RATE_LIMIT_ENABLED", True)
 RATE_LIMIT_MAX_FAILURES = env_int("GITMAN_RATE_LIMIT_MAX_FAILURES", 5, minimum=1)
 RATE_LIMIT_WINDOW_SECONDS = env_int("GITMAN_RATE_LIMIT_WINDOW_SECONDS", 300, minimum=1)
 RATE_LIMIT_COOLDOWN_SECONDS = env_int("GITMAN_RATE_LIMIT_COOLDOWN_SECONDS", 300, minimum=1)
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,62}$")
+HOSTNAME_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REV_RE = re.compile(r"^(null|[0-9a-fA-F]{1,40})$")
 REF_TYPE_BRANCH = "branch"
 REF_TYPE_TAG = "tag"
@@ -81,6 +88,8 @@ REF_QUERY_KEYS = {"ref", "ref_type", "ref_value"}
 REF_VALUE_SEPARATOR = "|"
 DEFAULT_BRANCH_CANDIDATES = ("main", "master")
 SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style)\b[^>]*>.*?</\1>")
+PAGES_VERIFY_TXT_PREFIX = "_gitman-pages"
+PAGES_VERIFY_VALUE_PREFIX = "gitman-pages-verification="
 RESERVED_USERNAMES = {
     "dashboard",
     "favicon.ico",
@@ -286,6 +295,7 @@ def init_db():
                 owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
+                pages_docs_enabled INTEGER NOT NULL DEFAULT 0,
                 forked_from_repo_id INTEGER REFERENCES repositories(id) ON DELETE SET NULL,
                 forked_at TEXT,
                 forked_from_node TEXT NOT NULL DEFAULT '',
@@ -375,6 +385,19 @@ def init_db():
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS custom_domains (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                domain TEXT NOT NULL,
+                verification_token TEXT NOT NULL,
+                verified_at TEXT,
+                last_checked_at TEXT,
+                status TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id, domain)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_repositories_owner ON repositories(owner_id);
             CREATE INDEX IF NOT EXISTS idx_issues_repo_number ON issues(repo_id, number);
             CREATE INDEX IF NOT EXISTS idx_issues_repo_status ON issues(repo_id, status);
@@ -385,10 +408,13 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_pull_requests_source ON pull_requests(source_repo_id);
             CREATE INDEX IF NOT EXISTS idx_pull_request_comments_pull_request ON pull_request_comments(pull_request_id);
             CREATE INDEX IF NOT EXISTS idx_commit_comments_commit ON commit_comments(repo_id, commit_node);
+            CREATE INDEX IF NOT EXISTS idx_custom_domains_domain ON custom_domains(domain);
+            CREATE INDEX IF NOT EXISTS idx_custom_domains_user ON custom_domains(user_id);
             """
         )
         ensure_user_profile_columns(conn)
         ensure_repository_collaboration_columns(conn)
+        ensure_repository_pages_columns(conn)
         ensure_pull_request_ref_columns(conn)
 
 
@@ -418,6 +444,12 @@ def ensure_repository_collaboration_columns(conn):
         if name not in columns:
             conn.execute(ddl)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_repositories_forked_from ON repositories(forked_from_repo_id)")
+
+
+def ensure_repository_pages_columns(conn):
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(repositories)")}
+    if "pages_docs_enabled" not in columns:
+        conn.execute("ALTER TABLE repositories ADD COLUMN pages_docs_enabled INTEGER NOT NULL DEFAULT 0")
 
 
 def ensure_pull_request_ref_columns(conn):
@@ -614,6 +646,13 @@ def load_current_user():
 
 
 @app.hook("before_request")
+def dispatch_pages_host():
+    response_for_host = pages_response_for_request_host()
+    if response_for_host is not None:
+        raise response_for_host
+
+
+@app.hook("before_request")
 def enforce_browser_post_security():
     if request.method != "POST" or is_git_request_path():
         return
@@ -624,6 +663,9 @@ def enforce_browser_post_security():
 
 @app.hook("after_request")
 def add_security_headers():
+    if request.environ.get("gitman.pages_response"):
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        return
     for key, value in SECURITY_HEADERS.items():
         response.headers.setdefault(key, value)
     if not is_git_request_path():
@@ -1572,6 +1614,400 @@ def render_markdown_links(text):
 
 def render_repo_description(text):
     return render_markdown_links(text)
+
+
+def normalize_request_host(value):
+    host = (value or "").split(",", 1)[0].strip().lower()
+    if not host:
+        return ""
+    if host.startswith("["):
+        return host.rstrip(".")
+    if ":" in host:
+        hostname, port = host.rsplit(":", 1)
+        if port.isdigit():
+            host = hostname
+    return host.rstrip(".")
+
+
+def valid_hostname(hostname):
+    if not hostname or len(hostname) > 253:
+        return False
+    labels = hostname.rstrip(".").split(".")
+    return all(HOSTNAME_LABEL_RE.match(label) for label in labels)
+
+
+def normalize_custom_domain(value):
+    raw = (value or "").strip()
+    if not raw:
+        raise ValueError("CNAME must contain a domain name.")
+    if "://" in raw or "/" in raw or "\\" in raw or any(char.isspace() for char in raw):
+        raise ValueError("CNAME must contain only a domain name.")
+    domain = raw.lower().rstrip(".")
+    if not valid_hostname(domain):
+        raise ValueError("CNAME must contain a valid domain name.")
+    if PAGES_DOMAIN and (domain == PAGES_DOMAIN or domain.endswith(f".{PAGES_DOMAIN}")):
+        raise ValueError(f"Use the {PAGES_DOMAIN} Pages host directly instead of a CNAME.")
+    return domain
+
+
+def user_site_repo_name(username):
+    return f"{username}.{PAGES_DOMAIN}"
+
+
+def is_user_site_repo(repo):
+    return bool(repo and PAGES_DOMAIN and repo["name"] == user_site_repo_name(repo["owner_username"]))
+
+
+def pages_host_for_owner(username):
+    return f"{username}.{PAGES_DOMAIN}"
+
+
+def pages_url_for_repo(repo):
+    host = pages_host_for_owner(repo["owner_username"])
+    if is_user_site_repo(repo):
+        return f"https://{host}/"
+    return f"https://{host}/{repo['name']}/"
+
+
+def custom_domain_txt_name(domain):
+    return f"{PAGES_VERIFY_TXT_PREFIX}.{domain}"
+
+
+def custom_domain_txt_value(token):
+    return f"{PAGES_VERIFY_VALUE_PREFIX}{token}"
+
+
+def resolve_dns_txt(record_name):
+    if dns is None:
+        raise ValueError("DNS lookup support is unavailable. Install dnspython to verify custom domains.")
+    try:
+        answers = dns.resolver.resolve(record_name, "TXT", lifetime=5)
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        return []
+    except dns.exception.DNSException as exc:
+        raise ValueError(f"DNS lookup failed: {exc}") from exc
+
+    values = []
+    for answer in answers:
+        strings = getattr(answer, "strings", None)
+        if strings is not None:
+            values.append(b"".join(strings).decode("utf-8", "replace"))
+        else:
+            values.append(answer.to_text().strip('"'))
+    return values
+
+
+def get_custom_domain_for_user(user_id, domain):
+    with db_connect() as conn:
+        return conn.execute(
+            """
+            SELECT *
+            FROM custom_domains
+            WHERE user_id = ? AND domain = ?
+            """,
+            (user_id, domain),
+        ).fetchone()
+
+
+def ensure_custom_domain_for_user(user_id, domain):
+    domain = normalize_custom_domain(domain)
+    existing = get_custom_domain_for_user(user_id, domain)
+    if existing:
+        return existing
+
+    now = utcnow()
+    token = secrets.token_urlsafe(32)
+    with db_connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO custom_domains (
+                user_id, domain, verification_token, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, domain, token, now, now),
+        )
+    return get_custom_domain_for_user(user_id, domain)
+
+
+def custom_domains_for_domain(domain):
+    with db_connect() as conn:
+        return conn.execute(
+            """
+            SELECT custom_domains.*, users.username AS owner_username
+            FROM custom_domains
+            JOIN users ON users.id = custom_domains.user_id
+            WHERE custom_domains.domain = ?
+            ORDER BY custom_domains.verified_at DESC, custom_domains.id DESC
+            """,
+            (domain,),
+        ).fetchall()
+
+
+def update_custom_domain_check(custom_domain, verified, status):
+    now = utcnow()
+    verified_at = now if verified else None
+    with db_connect() as conn:
+        conn.execute(
+            """
+            UPDATE custom_domains
+            SET verified_at = ?, last_checked_at = ?, status = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (verified_at, now, status[:500], now, custom_domain["id"]),
+        )
+    return get_custom_domain_for_user(custom_domain["user_id"], custom_domain["domain"])
+
+
+def read_cname_domain_for_repo(repo):
+    if not repo:
+        return "", ""
+    path = repo_path(repo["owner_username"], repo["name"])
+    try:
+        revision = ref_revision(default_code_ref(path))
+        files = git_files(path, revision)
+    except (GitCommandError, OSError):
+        return "", ""
+
+    by_lower = {file_path.lower(): file_path for file_path in files}
+    cname_path = by_lower.get("cname")
+    if not cname_path:
+        return "", ""
+
+    try:
+        content = read_file_bytes(path, cname_path, revision=revision).decode("utf-8", "replace")
+    except GitCommandError:
+        return "", ""
+
+    raw_domain = ""
+    for line in content.splitlines():
+        if line.strip():
+            raw_domain = line.strip()
+            break
+    if not raw_domain:
+        return "", "CNAME is empty."
+    try:
+        return normalize_custom_domain(raw_domain), ""
+    except ValueError as exc:
+        return "", str(exc)
+
+
+def verify_custom_domain_for_repo(repo):
+    if not is_user_site_repo(repo):
+        raise ValueError("Custom domains can only be verified from the user Pages repository.")
+    domain, cname_error = read_cname_domain_for_repo(repo)
+    if cname_error:
+        raise ValueError(cname_error)
+    if not domain:
+        raise ValueError("Add a root CNAME file before verifying a custom domain.")
+
+    custom_domain = ensure_custom_domain_for_user(repo["owner_id"], domain)
+    txt_name = custom_domain_txt_name(domain)
+    expected = custom_domain_txt_value(custom_domain["verification_token"])
+    try:
+        values = resolve_dns_txt(txt_name)
+    except ValueError as exc:
+        update_custom_domain_check(custom_domain, False, str(exc))
+        raise
+
+    if expected not in values:
+        message = f'TXT verification record was not found at "{txt_name}".'
+        update_custom_domain_check(custom_domain, False, message)
+        raise ValueError(message)
+
+    return update_custom_domain_check(custom_domain, True, "Domain verified.")
+
+
+def pages_settings_context(repo):
+    docs_publishable = bool(repo and not is_user_site_repo(repo))
+    context = {
+        "domain": PAGES_DOMAIN,
+        "url": pages_url_for_repo(repo),
+        "docs_publishable": docs_publishable,
+        "docs_enabled": bool(repo["pages_docs_enabled"]) if docs_publishable else False,
+        "is_user_site_repo": is_user_site_repo(repo),
+        "cname_domain": "",
+        "cname_error": "",
+        "custom_domain": None,
+        "txt_name": "",
+        "txt_value": "",
+    }
+    if not context["is_user_site_repo"]:
+        return context
+
+    domain, cname_error = read_cname_domain_for_repo(repo)
+    context["cname_domain"] = domain
+    context["cname_error"] = cname_error
+    if domain and not cname_error:
+        custom_domain = ensure_custom_domain_for_user(repo["owner_id"], domain)
+        context["custom_domain"] = custom_domain
+        context["txt_name"] = custom_domain_txt_name(domain)
+        context["txt_value"] = custom_domain_txt_value(custom_domain["verification_token"])
+    return context
+
+
+def clean_pages_request_path(path_info):
+    raw = unquote(path_info or "/")
+    trailing_slash = raw.endswith("/") and raw != "/"
+    stripped = raw.strip("/")
+    if not stripped:
+        return "", trailing_slash
+    parts = stripped.split("/")
+    if any(part in {"", ".", "..", ".git"} for part in parts):
+        return None, trailing_slash
+    pure_parts = PurePosixPath(stripped).parts
+    if any(part in {"", ".", "..", ".git"} for part in pure_parts):
+        return None, trailing_slash
+    return "/".join(pure_parts), trailing_slash
+
+
+def join_pages_path(*parts):
+    return "/".join(part.strip("/") for part in parts if part)
+
+
+def pages_file_candidates(base_path, request_path, trailing_slash=False):
+    target = join_pages_path(base_path, request_path)
+    candidates = []
+    if target and not trailing_slash:
+        candidates.append(target)
+    index_path = join_pages_path(target, "index.html") if target else "index.html"
+    candidates.append(index_path)
+    if request_path and target and not trailing_slash and "." not in PurePosixPath(request_path).name:
+        candidates.append(f"{target}.html")
+
+    seen = set()
+    unique = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            unique.append(candidate)
+    return unique
+
+
+def pages_content_type(file_path):
+    content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+    if (
+        content_type.startswith("text/")
+        or content_type in {"application/javascript", "application/json", "application/xml", "image/svg+xml"}
+    ):
+        content_type += "; charset=utf-8"
+    return content_type
+
+
+def pages_http_response(body, status=200, content_type="text/plain; charset=utf-8"):
+    request.environ["gitman.pages_response"] = True
+    if request.method == "HEAD":
+        body = b""
+    return HTTPResponse(body=body, status=status, content_type=content_type)
+
+
+def pages_not_found_response(repo=None, base_path="", revision=None, files=None):
+    if repo and revision and files:
+        not_found_path = join_pages_path(base_path, "404.html")
+        if not_found_path in files:
+            path = repo_path(repo["owner_username"], repo["name"])
+            content = read_file_bytes(path, not_found_path, revision=revision)
+            return pages_http_response(content, status=404, content_type=pages_content_type(not_found_path))
+    return pages_http_response("Not found.\n", status=404)
+
+
+def pages_response_for_repo(repo, base_path, request_path, trailing_slash=False):
+    path = repo_path(repo["owner_username"], repo["name"])
+    try:
+        revision = ref_revision(default_code_ref(path))
+        files = git_files(path, revision)
+    except (GitCommandError, OSError):
+        return pages_not_found_response()
+
+    for candidate in pages_file_candidates(base_path, request_path, trailing_slash=trailing_slash):
+        if candidate in files:
+            content = read_file_bytes(path, candidate, revision=revision)
+            return pages_http_response(content, content_type=pages_content_type(candidate))
+    return pages_not_found_response(repo, base_path=base_path, revision=revision, files=files)
+
+
+def pages_repo_for_request(owner_username, request_path):
+    first, separator, rest = request_path.partition("/")
+    if first:
+        project_repo = get_repo(owner_username, first.lower())
+        if (
+            project_repo
+            and project_repo["pages_docs_enabled"]
+            and not is_user_site_repo(project_repo)
+        ):
+            return project_repo, "docs", rest if separator else ""
+
+    site_repo = get_repo(owner_username, user_site_repo_name(owner_username))
+    if site_repo:
+        return site_repo, "", request_path
+    return None, "", request_path
+
+
+def pages_response_for_owner(owner_username):
+    if request.method not in {"GET", "HEAD"}:
+        request.environ["gitman.pages_response"] = True
+        return HTTPResponse(
+            "Method not allowed.\n",
+            status=405,
+            headers={"Allow": "GET, HEAD"},
+            content_type="text/plain; charset=utf-8",
+        )
+
+    owner_username = (owner_username or "").lower()
+    if not SLUG_RE.match(owner_username) or not get_user_by_username(owner_username):
+        return pages_not_found_response()
+
+    request_path, trailing_slash = clean_pages_request_path(request.environ.get("PATH_INFO", request.path) or "/")
+    if request_path is None:
+        return pages_not_found_response()
+
+    repo, base_path, repo_request_path = pages_repo_for_request(owner_username, request_path)
+    if not repo:
+        return pages_not_found_response()
+    return pages_response_for_repo(repo, base_path, repo_request_path, trailing_slash=trailing_slash)
+
+
+def pages_owner_from_host(host):
+    if not PAGES_DOMAIN or host == PAGES_DOMAIN:
+        return None, False
+    suffix = f".{PAGES_DOMAIN}"
+    if not host.endswith(suffix):
+        return None, False
+    return host[: -len(suffix)], True
+
+
+def custom_domain_site_for_host(host):
+    try:
+        domain = normalize_custom_domain(host)
+    except ValueError:
+        return None, False
+
+    rows = custom_domains_for_domain(domain)
+    if not rows:
+        return None, False
+
+    for row in rows:
+        if not row["verified_at"]:
+            continue
+        site_repo = get_repo(row["owner_username"], user_site_repo_name(row["owner_username"]))
+        cname_domain, cname_error = read_cname_domain_for_repo(site_repo)
+        if not cname_error and cname_domain == domain:
+            return {"owner_username": row["owner_username"], "domain": domain}, True
+    return None, True
+
+
+def pages_response_for_request_host():
+    host = normalize_request_host(request.get_header("Host", ""))
+    owner_username, is_pages_subdomain = pages_owner_from_host(host)
+    if is_pages_subdomain:
+        return pages_response_for_owner(owner_username)
+
+    site, registered_domain = custom_domain_site_for_host(host)
+    if site:
+        return pages_response_for_owner(site["owner_username"])
+    if registered_domain:
+        return pages_not_found_response()
+    return None
 
 
 def is_null_revision(value):
@@ -3025,6 +3461,19 @@ def fork_repo(owner, repo_name):
         )
 
 
+def render_repo_settings_page(repo, path, contributor_username="", error=None, notice=None):
+    return render(
+        "repo_settings.tpl",
+        repo=repo,
+        contributors=list_repo_contributors(repo["id"]),
+        contributor_username=contributor_username,
+        pages_settings=pages_settings_context(repo),
+        error=error,
+        notice=notice,
+        **repo_page_context(repo, path),
+    )
+
+
 @app.route("/<owner>/<repo_name>/settings", method=["GET", "POST"])
 def repo_settings(owner, repo_name):
     user = require_login()
@@ -3036,26 +3485,13 @@ def repo_settings(owner, repo_name):
 
     path = repo_path(owner, repo_name)
     if request.method == "GET":
-        return render(
-            "repo_settings.tpl",
-            repo=repo,
-            contributors=list_repo_contributors(repo["id"]),
-            contributor_username="",
-            **repo_page_context(repo, path),
-        )
+        return render_repo_settings_page(repo, path)
 
     action = request.forms.get("action", "save")
     if action == "delete":
         confirmation = request.forms.get("confirm_name", "").strip()
         if confirmation != repo["name"]:
-            return render(
-                "repo_settings.tpl",
-                repo=repo,
-                contributors=list_repo_contributors(repo["id"]),
-                contributor_username="",
-                error=f'Type "{repo["name"]}" to confirm deletion.',
-                **repo_page_context(repo, path),
-            )
+            return render_repo_settings_page(repo, path, error=f'Type "{repo["name"]}" to confirm deletion.')
         delete_repository(repo, path)
         redirect(f"/{owner}")
 
@@ -3065,14 +3501,7 @@ def repo_settings(owner, repo_name):
             add_repo_contributor(repo, user, contributor_username)
             redirect(f"/{owner}/{repo_name}/settings")
         except ValueError as exc:
-            return render(
-                "repo_settings.tpl",
-                repo=repo,
-                contributors=list_repo_contributors(repo["id"]),
-                contributor_username=contributor_username,
-                error=str(exc),
-                **repo_page_context(repo, path),
-            )
+            return render_repo_settings_page(repo, path, contributor_username=contributor_username, error=str(exc))
 
     if action == "remove_contributor":
         try:
@@ -3082,6 +3511,24 @@ def repo_settings(owner, repo_name):
         remove_repo_contributor(repo, contributor_user_id)
         redirect(f"/{owner}/{repo_name}/settings")
 
+    if action == "update_pages":
+        pages_docs_enabled = int(not is_user_site_repo(repo) and request.forms.get("pages_docs_enabled") == "1")
+        with db_connect() as conn:
+            conn.execute(
+                "UPDATE repositories SET pages_docs_enabled = ?, updated_at = ? WHERE id = ?",
+                (pages_docs_enabled, utcnow(), repo["id"]),
+            )
+        updated_repo = get_repo(owner, repo_name)
+        return render_repo_settings_page(updated_repo, path, notice="Pages settings updated.")
+
+    if action == "verify_custom_domain":
+        try:
+            verify_custom_domain_for_repo(repo)
+            repo = get_repo(owner, repo_name)
+            return render_repo_settings_page(repo, path, notice="Custom domain verified.")
+        except ValueError as exc:
+            return render_repo_settings_page(repo, path, error=str(exc))
+
     description = request.forms.get("description", "").strip()[:500]
     with db_connect() as conn:
         conn.execute(
@@ -3090,14 +3537,7 @@ def repo_settings(owner, repo_name):
         )
     updated_repo = get_repo(owner, repo_name)
     sync_repo_git_config(updated_repo)
-    return render(
-        "repo_settings.tpl",
-        repo=updated_repo,
-        contributors=list_repo_contributors(updated_repo["id"]),
-        contributor_username="",
-        notice="Repository settings updated.",
-        **repo_page_context(updated_repo, path),
-    )
+    return render_repo_settings_page(updated_repo, path, notice="Repository settings updated.")
 
 
 @app.route("/<owner>/<repo_name>/src")

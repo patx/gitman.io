@@ -2,7 +2,7 @@
 
 A small Bottle app that hosts public Git repositories with local user accounts.
 
-Features include public user profiles, repository browsing, commit/branch diffs with comments, README rendering, issues, pull requests, repository contributors, stars, and HTTP Git clone, fetch, and push.
+Features include public user profiles, repository browsing, commit/branch diffs with comments, README rendering, issues, pull requests, repository contributors, stars, Pages-style static sites, and HTTP Git clone, fetch, and push.
 
 ## Run locally
 
@@ -28,6 +28,8 @@ Then open `http://127.0.0.1:8080`, create an account, and create a repository.
 - `/<owner>/<repo>/pulls`: list, create, comment on, close, and merge pull requests.
 - `/<owner>/<repo>/settings`: owner-only repository settings for descriptions, contributors, and deletion.
 - `/git/<owner>/<repo>`: the Git HTTP remote used by `git clone`, `git fetch`, and `git push`.
+- `<username>.gitman.io`: static Pages site from `<username>/<username>.gitman.io`.
+- `<username>.gitman.io/<repo>`: static project docs from `<username>/<repo>/docs` when enabled in repository settings.
 
 Repository pages share a tab bar for Overview, Source, Commits, Issues, Pull requests, Star, Fork, and owner Settings. Repository pages that display code also show a ref picker next to the repository title. Use it to switch branches, tags, commits, or `HEAD`; its footer links to the full Tags and Branches pages.
 
@@ -108,6 +110,13 @@ Repository owners and contributors can comment, close, and merge pull requests. 
 - Only the owner can edit repository settings, add or remove contributors, or delete the repository.
 - Deleting a repository permanently removes its database records and Git data from disk.
 
+### Pages sites
+
+- Create `<username>.gitman.io` under your account and push static files to its default branch root. Requests to `<username>.gitman.io` serve those files.
+- For other repositories, add static files under `docs/`, then enable Pages in repository Settings. The docs site is served at `<username>.gitman.io/<repo>/`.
+- Pages serves exact files, directory `index.html`, extensionless `.html` paths, and a repository `404.html` fallback when present.
+- To use a custom domain, add a root `CNAME` file to `<username>/<username>.gitman.io`, open that repository's Settings page, create the shown DNS TXT record, then click Verify DNS. Custom domains also serve enabled project docs paths.
+
 ## Git client use
 
 Clone and fetch are public:
@@ -138,6 +147,7 @@ git remote set-url origin http://<username>@127.0.0.1:8080/git/<owner>/<repo>
 - `GITMAN_MAX_RENDER_BYTES`: maximum README/file/diff preview size. Defaults to `262144`.
 - `GITMAN_MAX_GIT_RESPONSE_BYTES`: maximum buffered Git HTTP response size. Defaults to `268435456`.
 - `GITMAN_GIT_BINARY`: Git executable name or full path. Defaults to `git`.
+- `GITMAN_PAGES_DOMAIN`: wildcard Pages domain. Defaults to `gitman.io`.
 - `GITMAN_RATE_LIMIT_ENABLED`: set to `0` to disable in-memory login/signup/git auth throttling.
 - `GITMAN_RATE_LIMIT_MAX_FAILURES`: failed attempts before throttling. Defaults to `5`.
 - `GITMAN_RATE_LIMIT_WINDOW_SECONDS`: rate limit window. Defaults to `300`.
@@ -266,7 +276,9 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-Use your DNS provider to point the hostname at the VPS. For HTTPS on a small VPS, I recommend Certbot with Nginx:
+Use your DNS provider to point the hostname at the VPS. For Pages, also point the wildcard hostname for `GITMAN_PAGES_DOMAIN`, such as `*.gitman.io`, at the VPS and include that wildcard in the Nginx `server_name` values. Verified custom domains must also point at the VPS.
+
+For HTTPS on a small VPS, I recommend Certbot with Nginx:
 
 ```sh
 sudo apt install -y certbot python3-certbot-nginx

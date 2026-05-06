@@ -552,9 +552,9 @@ def test_init_db_creates_expected_tables_and_is_idempotent(isolated_app):
         repo_columns = {row["name"] for row in conn.execute("PRAGMA table_info(repositories)")}
         pr_columns = {row["name"] for row in conn.execute("PRAGMA table_info(pull_requests)")}
 
-    assert {"users", "repositories", "issues", "pull_requests", "repo_stars"}.issubset(tables)
+    assert {"users", "repositories", "issues", "pull_requests", "repo_stars", "custom_domains"}.issubset(tables)
     assert {"display_name", "bio", "website"}.issubset(user_columns)
-    assert {"forked_from_repo_id", "forked_at", "forked_from_node"}.issubset(repo_columns)
+    assert {"forked_from_repo_id", "forked_at", "forked_from_node", "pages_docs_enabled"}.issubset(repo_columns)
     assert {"target_ref_type", "target_ref_name", "source_ref_type", "source_ref_name"}.issubset(pr_columns)
 
 
@@ -759,6 +759,119 @@ def test_git_read_helpers_return_files_readme_commits_and_default_ref(isolated_a
     assert ref["node"] == node
     assert isolated_app.repo_has_revision(path, node)
     assert isolated_app.is_ancestor(path, isolated_app.NULL_REV, node)
+
+
+def test_pages_host_serves_user_site_and_enabled_project_docs(isolated_app):
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "alice.gitman.io", "")
+    site_path = isolated_app.repo_path("alice", "alice.gitman.io")
+    commit_file(site_path, "index.html", "<h1>Alice Site</h1>\n", message="site index", user="alice")
+    commit_file(site_path, "about.html", "<p>About Alice</p>\n", message="about page", user="alice")
+    commit_file(site_path, "404.html", "<h1>Missing page</h1>\n", message="not found page", user="alice")
+
+    isolated_app.create_repository(owner, "project", "")
+    project_path = isolated_app.repo_path("alice", "project")
+    commit_file(project_path, "docs/index.html", "<h1>Project Docs</h1>\n", message="docs index", user="alice")
+    commit_file(project_path, "docs/guide.html", "<h1>Guide</h1>\n", message="docs guide", user="alice")
+
+    client = WsgiClient(isolated_app.app)
+    response = client.get("/", headers={"Host": "alice.gitman.io"})
+    assert response.status_code == 200
+    assert "<h1>Alice Site</h1>" in response.text
+    assert response.header("Content-Type").startswith("text/html")
+    assert response.header("Content-Security-Policy") is None
+
+    response = client.get("/about", headers={"Host": "alice.gitman.io"})
+    assert response.status_code == 200
+    assert "About Alice" in response.text
+
+    response = client.get("/project/", headers={"Host": "alice.gitman.io"})
+    assert response.status_code == 404
+    assert "Missing page" in response.text
+
+    login_client(client, "alice")
+    settings_response = client.get("/alice/project/settings")
+    assert settings_response.status_code == 200
+    assert "Publish this repository" in settings_response.text
+
+    response = client.post("/alice/project/settings", {"action": "update_pages", "pages_docs_enabled": "1"})
+    assert response.status_code == 200
+    assert "Pages settings updated." in response.text
+
+    response = client.get("/project/", headers={"Host": "alice.gitman.io"})
+    assert response.status_code == 200
+    assert "Project Docs" in response.text
+
+    response = client.get("/project/guide", headers={"Host": "alice.gitman.io"})
+    assert response.status_code == 200
+    assert "Guide" in response.text
+
+    response = client.get("/.git/config", headers={"Host": "alice.gitman.io"})
+    assert response.status_code == 404
+
+
+def test_custom_pages_domain_requires_dns_txt_verification_and_current_cname(isolated_app, monkeypatch):
+    owner = create_user("alice")
+    attacker = create_user("bob")
+    isolated_app.create_repository(owner, "alice.gitman.io", "")
+    site_path = isolated_app.repo_path("alice", "alice.gitman.io")
+    commit_file(site_path, "index.html", "<h1>Alice Custom Site</h1>\n", message="site index", user="alice")
+    commit_file(site_path, "404.html", "<h1>Alice Missing</h1>\n", message="site 404", user="alice")
+    commit_file(site_path, "CNAME", "www.example.com\n", message="custom domain", user="alice")
+
+    alice_client = WsgiClient(isolated_app.app)
+    login_client(alice_client, "alice")
+    settings_response = alice_client.get("/alice/alice.gitman.io/settings")
+    assert settings_response.status_code == 200
+    assert "_gitman-pages.www.example.com" in settings_response.text
+
+    custom_domain = isolated_app.get_custom_domain_for_user(owner["id"], "www.example.com")
+    expected_txt = isolated_app.custom_domain_txt_value(custom_domain["verification_token"])
+    assert expected_txt in settings_response.text
+
+    response = alice_client.get("/", headers={"Host": "www.example.com"})
+    assert response.status_code == 404
+
+    monkeypatch.setattr(isolated_app, "resolve_dns_txt", lambda record_name: [])
+    response = alice_client.post("/alice/alice.gitman.io/settings", {"action": "verify_custom_domain"})
+    assert response.status_code == 200
+    assert "TXT verification record was not found" in response.text
+    assert isolated_app.get_custom_domain_for_user(owner["id"], "www.example.com")["verified_at"] is None
+
+    monkeypatch.setattr(isolated_app, "resolve_dns_txt", lambda record_name: [expected_txt])
+    response = alice_client.post("/alice/alice.gitman.io/settings", {"action": "verify_custom_domain"})
+    assert response.status_code == 200
+    assert "Custom domain verified." in response.text
+    assert isolated_app.get_custom_domain_for_user(owner["id"], "www.example.com")["verified_at"]
+
+    response = alice_client.get("/", headers={"Host": "www.example.com"})
+    assert response.status_code == 200
+    assert "Alice Custom Site" in response.text
+
+    isolated_app.create_repository(attacker, "bob.gitman.io", "")
+    attacker_path = isolated_app.repo_path("bob", "bob.gitman.io")
+    commit_file(attacker_path, "index.html", "<h1>Bob Site</h1>\n", message="site index", user="bob")
+    commit_file(attacker_path, "CNAME", "www.example.com\n", message="custom domain", user="bob")
+
+    bob_client = WsgiClient(isolated_app.app)
+    login_client(bob_client, "bob")
+    bob_settings = bob_client.get("/bob/bob.gitman.io/settings")
+    assert bob_settings.status_code == 200
+    assert "_gitman-pages.www.example.com" in bob_settings.text
+
+    response = bob_client.post("/bob/bob.gitman.io/settings", {"action": "verify_custom_domain"})
+    assert response.status_code == 200
+    assert "TXT verification record was not found" in response.text
+
+    response = bob_client.get("/", headers={"Host": "www.example.com"})
+    assert response.status_code == 200
+    assert "Alice Custom Site" in response.text
+    assert "Bob Site" not in response.text
+
+    commit_file(site_path, "CNAME", "other.example.com\n", message="change custom domain", user="alice")
+    response = alice_client.get("/", headers={"Host": "www.example.com"})
+    assert response.status_code == 404
+    assert "Alice Custom Site" not in response.text
 
 
 def test_first_pushed_master_branch_becomes_default_and_stale_head_falls_back(isolated_app):
