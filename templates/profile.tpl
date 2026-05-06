@@ -3,12 +3,18 @@
 
 <section class="profile-header">
   <h1>
+  % if not profile_user["display_name"]:
+    {{profile_name}} <small>(@{{profile_user["username"]}})</small>
+  % else:
     {{profile_name}}
-  % if profile_user["display_name"]:
-    <div class="muted">@{{profile_user["username"]}}</div>
   % end
   </h1>
-
+  <p class="muted"><small>
+    Joined {{profile_user["created_at"]}}
+    % if is_self:
+      <a class="button-link" href="/settings/profile">Edit profile</a>
+    % end
+  </small></p>
   % if profile_user["bio"]:
     <p>{{!render_markdown_links(profile_user["bio"])}}</p>
   % else:
@@ -17,12 +23,6 @@
   % if profile_user["website"]:
     <p><a href="{{profile_user['website']}}" rel="nofollow">{{profile_user["website"]}}</a></p>
   % end
-  <p class="muted"><small>
-    Joined {{profile_user["created_at"]}}
-    % if is_self:
-      <a class="button-link" href="/settings/profile">Edit profile</a>
-    % end
-  </small></p>
 </section>
 
 <section class="panel">
