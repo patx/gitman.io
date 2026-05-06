@@ -4,9 +4,9 @@
 <section class="profile-header">
   <h1>
   % if not profile_user["display_name"]:
-    {{profile_name}} <small>(@{{profile_user["username"]}})</small>
-  % else:
     {{profile_name}}
+  % else:
+    {{profile_name}} <small>(@{{profile_user["username"]}})</small>
   % end
   </h1>
   <p class="muted"><small>
