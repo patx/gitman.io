@@ -11,13 +11,15 @@
   % else:
     <p class="empty">No bio yet.</p>
   % end
-  <p class="muted">Joined {{profile_user["created_at"]}}</p>
   % if profile_user["website"]:
     <p><a href="{{profile_user['website']}}" rel="nofollow">{{profile_user["website"]}}</a></p>
   % end
-  % if is_self:
-    <p><a class="button small" href="/settings/profile">Edit profile</a></p>
-  % end
+  <p class="muted"><small>
+    Joined {{profile_user["created_at"]}}
+    % if is_self:
+      <a class="button-link" href="/settings/profile">Edit profile</a>
+    % end
+  </small></p>
 </section>
 
 <section class="panel">
