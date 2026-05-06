@@ -25,7 +25,7 @@
 
 <section class="panel">
   <h2>Pages</h2>
-  <p class="muted">Pages URL: <a href="{{pages_settings['url']}}">{{pages_settings["url"]}}</a> <small class="muted">source: `docs/`</small></p>
+  <p class="muted"><strong>Pages URL:</strong> <a href="{{pages_settings['url']}}">{{pages_settings["url"]}}</a></p>
   % if pages_settings["docs_publishable"]:
     <form class="panel-heading" method="post">
       {{!csrf_field()}}
@@ -33,9 +33,9 @@
       <input type="hidden" name="pages_docs_enabled" value="{{0 if pages_settings['docs_enabled'] else 1}}">
       <div>
         % if pages_settings["docs_enabled"]:
-          <p><strong>Published</strong></p>
+          <p><strong>Published</strong> <small class="muted">(from source: `docs/`)</small></p>
         % else:
-          <p><strong>Not published</strong></p>
+          <p><strong>Not published</strong> <small class="muted">(from source: `docs/`)</small></p>
         % end
       </div>
       <button class="button" type="submit">{{"Unpublish Pages" if pages_settings["docs_enabled"] else "Publish Pages"}}</button>
@@ -45,11 +45,10 @@
   % end
 
   % if pages_settings["is_user_site_repo"]:
-    <h3>Custom domain</h3>
     % if pages_settings["cname_error"]:
       <p class="alert">{{pages_settings["cname_error"]}}</p>
     % elif pages_settings["cname_domain"]:
-      <p>Root CNAME: <strong>{{pages_settings["cname_domain"]}}</strong></p>
+      <p class="muted"><strong>Custom Domain:</strong> {{pages_settings["cname_domain"]}}</p>
       <p class="muted">Create this DNS TXT record before verifying:</p>
       <p><code>{{pages_settings["txt_name"]}}</code></p>
       <p><code>{{pages_settings["txt_value"]}}</code></p>
@@ -66,7 +65,7 @@
         <button class="button" type="submit">Verify DNS</button>
       </form>
     % else:
-      <p class="muted">Add a root CNAME file to this repository to configure a custom domain.</p>
+      <p class="muted"><strong>Custom Domain:</strong> Add a root CNAME file to this repository to configure a custom domain.</p>
     % end
   % end
 </section>
