@@ -49,14 +49,14 @@
       <p class="alert">{{pages_settings["cname_error"]}}</p>
     % elif pages_settings["cname_domain"]:
       % custom_domain = pages_settings["custom_domain"]
-      <p class="muted">
-        <strong>Custom Domain:</strong>
+      <p>
+        <strong class="muted">Custom Domain:</strong>
         {{pages_settings["cname_domain"]}}
         % if custom_domain and custom_domain["status"]:
           <small class="muted">{{custom_domain["status"]}}</small>
         % end
         % if custom_domain and custom_domain["verified_at"]:
-          <small class="notice">{{custom_domain["verified_at"]}}.</small>
+          <small class="notice">@{{custom_domain["verified_at"]}}.</small>
         % end
       </p>
       <p class="muted">Create this DNS TXT record before verifying:</p>
