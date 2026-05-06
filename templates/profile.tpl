@@ -2,10 +2,13 @@
 % rebase("base.tpl", title=profile_name, user=user, error=error, notice=notice)
 
 <section class="profile-header">
-  <h1>{{profile_name}}</h1>
+  <h1>
+    {{profile_name}}
   % if profile_user["display_name"]:
-    <p class="muted">@{{profile_user["username"]}}</p>
+    <div class="muted">@{{profile_user["username"]}}</div>
   % end
+  </h1>
+
   % if profile_user["bio"]:
     <p>{{!render_markdown_links(profile_user["bio"])}}</p>
   % else:
