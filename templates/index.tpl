@@ -3,7 +3,7 @@
 <section class="panel">
   <div class="panel-heading">
     <div>
-            <p class ="eyebrow">Git hosting</p>
+            <p class ="eyebrow">GitMan.io</p>
             <h1>Free Git repository hosting for open source software</h1>
             % if not user:
               <div class="hero-actions" style="margin-bottom:50px;">
