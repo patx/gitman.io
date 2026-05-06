@@ -48,9 +48,45 @@
   </main>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script>
-    if (window.hljs) {
-      document.querySelectorAll("pre code").forEach((block) => hljs.highlightElement(block));
-    }
+    (() => {
+      const addLineNumbers = (code, rawText) => {
+        const viewer = code.closest("[data-code-viewer]");
+        const pre = code.closest("pre.code");
+        if (!viewer || !pre || viewer.querySelector(".line-numbers")) return;
+
+        const text = rawText ?? code.textContent ?? "";
+        const lineCount = Math.max(1, text.split("\n").length - (text.endsWith("\n") ? 1 : 0));
+        const lineNumbers = document.createElement("div");
+        const fragment = document.createDocumentFragment();
+        lineNumbers.className = "line-numbers";
+        lineNumbers.setAttribute("aria-hidden", "true");
+
+        for (let line = 1; line <= lineCount; line += 1) {
+          const number = document.createElement("span");
+          number.textContent = line;
+          fragment.append(number);
+        }
+
+        lineNumbers.append(fragment);
+        viewer.insertBefore(lineNumbers, pre);
+      };
+
+      const blocks = document.querySelectorAll("pre code");
+      if (window.hljs) {
+        if (hljs.addPlugin) {
+          hljs.addPlugin({
+            "after:highlightElement": ({ el, text }) => addLineNumbers(el, text),
+          });
+        }
+        blocks.forEach((block) => {
+          hljs.highlightElement(block);
+          addLineNumbers(block);
+        });
+        return;
+      }
+
+      document.querySelectorAll("[data-code-viewer] pre.code code").forEach((block) => addLineNumbers(block));
+    })();
   </script>
   <script>
     (() => {

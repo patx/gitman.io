@@ -479,7 +479,7 @@ def test_readme_preview_is_truncated_but_source_files_render_fully(isolated_app,
     assert response.status_code == 200
     assert "File preview truncated." not in response.text
     assert readme_content in response.text
-    assert '<pre class="line-numbers" aria-hidden="true">1\n2\n3\n4</pre>' in response.text
+    assert '<div class="copyable-code" data-code-viewer>' in response.text
 
 
 def test_build_tree_deduplicates_entries_and_sorts_directories_first():

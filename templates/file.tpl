@@ -29,7 +29,7 @@
   % if is_binary:
     <p class="empty">Binary file, {{size}} bytes. Use the raw view to download it.</p>
   % else:
-    <div class="copyable-code">
+    <div class="copyable-code" data-code-viewer>
       <button
         class="copy-button"
         type="button"
@@ -43,7 +43,6 @@
         </svg>
         <span class="sr-only">Copy file contents</span>
       </button>
-      <pre class="line-numbers" aria-hidden="true">{{line_numbers}}</pre>
       <pre class="code"><code class="{{language_class}}">{{content}}</code></pre>
     </div>
   % end

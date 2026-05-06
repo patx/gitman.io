@@ -61,8 +61,8 @@ pre, .clone-box code { overflow-x: auto; padding: .6rem; border: 1px solid var(-
 pre code.hljs { padding: 0; background: transparent; }
 .copyable-code {
   position: relative;
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
+  display: flex;
+  align-items: stretch;
   border: 1px solid var(--border);
   background: var(--soft-surface);
 }
@@ -71,14 +71,23 @@ pre code.hljs { padding: 0; background: transparent; }
   border: 0;
   background: transparent;
 }
-.copyable-code pre.code { padding: 2.1rem .6rem .6rem; }
+.copyable-code pre.code {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2.1rem .6rem .6rem;
+}
 .line-numbers {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
   padding: 2.1rem .55rem .6rem .6rem;
   color: var(--muted);
   text-align: right;
   user-select: none;
   border-right: 1px solid var(--border);
-  overflow: hidden;
+}
+.line-numbers span {
+  display: block;
 }
 .copy-button {
   position: absolute;
