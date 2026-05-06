@@ -54,6 +54,7 @@
         {{pages_settings["cname_domain"]}}
         % if custom_domain and custom_domain["status"]:
           <small class="muted">{{custom_domain["status"]}}</small>
+        % end
         % if custom_domain and custom_domain["verified_at"]:
           <small class="notice">{{custom_domain["verified_at"]}}.</small>
         % end
