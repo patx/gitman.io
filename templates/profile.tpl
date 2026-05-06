@@ -17,8 +17,6 @@
   </small></p>
   % if profile_user["bio"]:
     <p>{{!render_markdown_links(profile_user["bio"])}}</p>
-  % else:
-    <p class="empty">No bio yet.</p>
   % end
   % if profile_user["website"]:
     <p><a href="{{profile_user['website']}}" rel="nofollow">{{profile_user["website"]}}</a></p>
