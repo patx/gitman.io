@@ -25,8 +25,8 @@
 
 <section class="panel">
   <h2>Pages</h2>
-  <p class="muted"><strong>Pages URL:</strong> <a href="{{pages_settings['url']}}">{{pages_settings["url"]}}</a></p>
   % if pages_settings["docs_publishable"]:
+    <p class="muted"><strong>Pages URL:</strong> <a href="{{pages_settings['url']}}">{{pages_settings["url"]}}</a></p>
     <form class="panel-heading" method="post">
       {{!csrf_field()}}
       <input type="hidden" name="action" value="update_pages">
@@ -41,7 +41,7 @@
       <button class="button" type="submit">{{"Unpublish Pages" if pages_settings["docs_enabled"] else "Publish Pages"}}</button>
     </form>
   % else:
-    <p>Push static site files to this repository root to publish the user Pages site.</p>
+  <p class="muted"><strong>Pages URL:</strong> <a href="{{pages_settings['url']}}">{{pages_settings["url"]}}</a> <small class="muted">(from source: `root`)</small></p>
   % end
 
   % if pages_settings["is_user_site_repo"]:
@@ -50,8 +50,8 @@
     % elif pages_settings["cname_domain"]:
       <p class="muted"><strong>Custom Domain:</strong> {{pages_settings["cname_domain"]}}</p>
       <p class="muted">Create this DNS TXT record before verifying:</p>
-      <p><code>{{pages_settings["txt_name"]}}</code></p>
-      <p><code>{{pages_settings["txt_value"]}}</code></p>
+      <pre>{{pages_settings["txt_name"]}}
+{{pages_settings["txt_value"]}}</pre>
       % custom_domain = pages_settings["custom_domain"]
       % if custom_domain and custom_domain["verified_at"]:
         <p class="notice">Verified {{custom_domain["verified_at"]}}.</p>
