@@ -54,6 +54,62 @@
   </script>
   <script>
     (() => {
+      const buttons = document.querySelectorAll("[data-copy-raw-url]");
+      if (!buttons.length) return;
+
+      const copyText = async (text) => {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          return;
+        }
+
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        textarea.style.top = "0";
+        document.body.append(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        textarea.remove();
+      };
+
+      buttons.forEach((button) => {
+        button.addEventListener("click", async () => {
+          const rawUrl = button.dataset.copyRawUrl;
+          if (!rawUrl || button.disabled) return;
+
+          const originalLabel = button.getAttribute("aria-label") || "Copy file contents";
+          button.disabled = true;
+          button.setAttribute("aria-label", "Copying file contents");
+
+          try {
+            const response = await fetch(rawUrl, { headers: { Accept: "text/plain" } });
+            if (!response.ok) throw new Error("Unable to fetch file contents.");
+            await copyText(await response.text());
+            button.classList.add("is-copied");
+            button.setAttribute("aria-label", "Copied file contents");
+            window.setTimeout(() => {
+              button.classList.remove("is-copied");
+              button.setAttribute("aria-label", originalLabel);
+            }, 1500);
+          } catch (error) {
+            button.classList.add("copy-error");
+            button.setAttribute("aria-label", "Unable to copy file contents");
+            window.setTimeout(() => {
+              button.classList.remove("copy-error");
+              button.setAttribute("aria-label", originalLabel);
+            }, 1500);
+          } finally {
+            button.disabled = false;
+          }
+        });
+      });
+    })();
+  </script>
+  <script>
+    (() => {
       const pickers = document.querySelectorAll("[data-ref-picker]");
       if (!pickers.length) return;
 

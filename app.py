@@ -3555,16 +3555,17 @@ def repo_source(owner, repo_name, file_path=""):
     if file_path in files:
         content = read_file_bytes(path, file_path, revision=revision)
         is_binary = b"\0" in content[:4096]
-        preview_content, preview_truncated = truncate_bytes_for_render(content)
+        text_content = content.decode("utf-8", "replace") if not is_binary else ""
+        line_count = max(1, text_content.count("\n") + (0 if text_content.endswith("\n") else 1))
         return render(
             "file.tpl",
             repo=repo,
             file_path=file_path,
-            content=preview_content.decode("utf-8", "replace") if not is_binary else "",
+            content=text_content,
             is_binary=is_binary,
             language_class=highlight_language_class(file_path),
+            line_numbers="\n".join(str(line_number) for line_number in range(1, line_count + 1)),
             size=len(content),
-            preview_truncated=preview_truncated,
             quote_path=quote_path,
             **repo_page_context(repo, path, selected_ref=selected_ref),
         )

@@ -59,6 +59,54 @@ h1, h2, p, pre, ul, table, form { margin-top: 0; }
 pre, code, input, textarea, select, button { font: inherit; }
 pre, .clone-box code { overflow-x: auto; padding: .6rem; border: 1px solid var(--border); background: var(--soft-surface); }
 pre code.hljs { padding: 0; background: transparent; }
+.copyable-code {
+  position: relative;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  border: 1px solid var(--border);
+  background: var(--soft-surface);
+}
+.copyable-code pre {
+  margin: 0;
+  border: 0;
+  background: transparent;
+}
+.copyable-code pre.code { padding: 2.1rem .6rem .6rem; }
+.line-numbers {
+  padding: 2.1rem .55rem .6rem .6rem;
+  color: var(--muted);
+  text-align: right;
+  user-select: none;
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+.copy-button {
+  position: absolute;
+  top: .45rem;
+  right: .45rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  padding: 0;
+  border-radius: .35rem;
+  background: var(--surface);
+  box-shadow: 0 1px 2px var(--shadow);
+}
+.copy-button svg {
+  width: 1rem;
+  height: 1rem;
+  fill: currentColor;
+}
+.copy-button.is-copied {
+  color: var(--notice);
+  border-color: var(--notice);
+}
+.copy-button.copy-error {
+  color: var(--danger);
+  border-color: var(--danger);
+}
 input, textarea, select { width: 100%; padding: .4rem; color: var(--text); border: 1px solid var(--control-border); background: var(--surface); }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: .35rem .5rem; border: 1px solid var(--border); text-align: left; }

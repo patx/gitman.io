@@ -463,11 +463,12 @@ def test_login_and_git_auth_failures_are_rate_limited(isolated_app, monkeypatch)
     assert response.header("Connection") is None
 
 
-def test_readme_and_file_previews_are_truncated(isolated_app, monkeypatch):
+def test_readme_preview_is_truncated_but_source_files_render_fully(isolated_app, monkeypatch):
     monkeypatch.setattr(gitman, "MAX_RENDER_BYTES", 32)
     owner = create_user("alice")
     isolated_app.create_repository(owner, "demo", "")
-    commit_file(isolated_app.repo_path("alice", "demo"), "README.md", "A" * 200, message="large readme")
+    readme_content = "line 1\nline 2\nline 3\n" + ("A" * 200)
+    commit_file(isolated_app.repo_path("alice", "demo"), "README.md", readme_content, message="large readme")
     client = WsgiClient(isolated_app.app)
 
     response = client.get("/alice/demo")
@@ -476,7 +477,9 @@ def test_readme_and_file_previews_are_truncated(isolated_app, monkeypatch):
 
     response = client.get("/alice/demo/src/README.md")
     assert response.status_code == 200
-    assert "File preview truncated." in response.text
+    assert "File preview truncated." not in response.text
+    assert readme_content in response.text
+    assert '<pre class="line-numbers" aria-hidden="true">1\n2\n3\n4</pre>' in response.text
 
 
 def test_build_tree_deduplicates_entries_and_sorts_directories_first():
