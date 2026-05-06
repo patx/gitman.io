@@ -25,7 +25,7 @@
 
 <section class="panel">
   <h2>Pages</h2>
-  <p class="muted">Pages URL: <a href="{{pages_settings['url']}}">{{pages_settings["url"]}}</a></p>
+  <p class="muted">Pages URL: <a href="{{pages_settings['url']}}">{{pages_settings["url"]}}</a> <small class="muted">source: `docs/`</small></p>
   % if pages_settings["docs_publishable"]:
     <form class="panel-heading" method="post">
       {{!csrf_field()}}
@@ -34,10 +34,8 @@
       <div>
         % if pages_settings["docs_enabled"]:
           <p><strong>Published</strong></p>
-          <p class="muted">This repository's docs/ directory is published at {{pages_settings["url"]}}.</p>
         % else:
           <p><strong>Not published</strong></p>
-          <p class="muted">Publish this repository's docs/ directory at {{pages_settings["url"]}}.</p>
         % end
       </div>
       <button class="button" type="submit">{{"Unpublish Pages" if pages_settings["docs_enabled"] else "Publish Pages"}}</button>
