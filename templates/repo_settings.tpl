@@ -48,14 +48,17 @@
     % if pages_settings["cname_error"]:
       <p class="alert">{{pages_settings["cname_error"]}}</p>
     % elif pages_settings["cname_domain"]:
-      <p class="muted"><strong>Custom Domain:</strong> {{pages_settings["cname_domain"]}}</p>
+      % custom_domain = pages_settings["custom_domain"]
+      <p class="muted">
+        <strong>Custom Domain:</strong>
+        {{pages_settings["cname_domain"]}}
+        % if custom_domain and custom_domain["verified_at"]:
+          <small class="notice">Verified {{custom_domain["verified_at"]}}.</small>
+        % end
+      </p>
       <p class="muted">Create this DNS TXT record before verifying:</p>
       <pre>{{pages_settings["txt_name"]}}
 {{pages_settings["txt_value"]}}</pre>
-      % custom_domain = pages_settings["custom_domain"]
-      % if custom_domain and custom_domain["verified_at"]:
-        <p class="notice">Verified {{custom_domain["verified_at"]}}.</p>
-      % end
       % if custom_domain and custom_domain["status"]:
         <p class="muted">{{custom_domain["status"]}}</p>
       % end
