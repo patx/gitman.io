@@ -49,24 +49,26 @@
       <p class="alert">{{pages_settings["cname_error"]}}</p>
     % elif pages_settings["cname_domain"]:
       % custom_domain = pages_settings["custom_domain"]
-      <p>
-        <strong class="muted">Custom Domain:</strong>
-        {{pages_settings["cname_domain"]}}
-        % if custom_domain and custom_domain["status"]:
-          <small class="muted">{{custom_domain["status"]}}</small>
-        % end
-        % if custom_domain and custom_domain["verified_at"]:
-          <small class="notice">@{{custom_domain["verified_at"]}}.</small>
-        % end
-      </p>
+      <form class="panel-heading" method="post">
+        {{!csrf_field()}}
+        <input type="hidden" name="action" value="verify_custom_domain">
+        <div>
+          <p>
+            <strong class="muted">Custom Domain:</strong>
+            {{pages_settings["cname_domain"]}}
+            % if custom_domain and custom_domain["status"]:
+              <small class="muted">{{custom_domain["status"]}}</small>
+            % end
+            % if custom_domain and custom_domain["verified_at"]:
+              <small class="notice">@{{custom_domain["verified_at"]}}.</small>
+            % end
+          </p>
+        </div>
+        <button class="button" type="submit">{{"Reverify DNS" if custom_domain and custom_domain["verified_at"] else "Verify DNS"}}</button>
+      </form>
       <p class="muted">Create this DNS TXT record before verifying:</p>
       <pre>{{pages_settings["txt_name"]}}
 {{pages_settings["txt_value"]}}</pre>
-      <form method="post">
-        {{!csrf_field()}}
-        <input type="hidden" name="action" value="verify_custom_domain">
-        <button class="button" type="submit">Verify DNS</button>
-      </form>
     % else:
       <p class="muted"><strong>Custom Domain:</strong> Add a root CNAME file to this repository to configure a custom domain.</p>
     % end

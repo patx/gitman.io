@@ -829,6 +829,8 @@ def test_custom_pages_domain_requires_dns_txt_verification_and_current_cname(iso
     settings_response = alice_client.get("/alice/alice.gitman.io/settings")
     assert settings_response.status_code == 200
     assert "_gitman-pages.www.example.com" in settings_response.text
+    assert "Verify DNS" in settings_response.text
+    assert "Reverify DNS" not in settings_response.text
 
     custom_domain = isolated_app.get_custom_domain_for_user(owner["id"], "www.example.com")
     expected_txt = isolated_app.custom_domain_txt_value(custom_domain["verification_token"])
@@ -841,12 +843,14 @@ def test_custom_pages_domain_requires_dns_txt_verification_and_current_cname(iso
     response = alice_client.post("/alice/alice.gitman.io/settings", {"action": "verify_custom_domain"})
     assert response.status_code == 200
     assert "TXT verification record was not found" in response.text
+    assert "Verify DNS" in response.text
     assert isolated_app.get_custom_domain_for_user(owner["id"], "www.example.com")["verified_at"] is None
 
     monkeypatch.setattr(isolated_app, "resolve_dns_txt", lambda record_name: [expected_txt])
     response = alice_client.post("/alice/alice.gitman.io/settings", {"action": "verify_custom_domain"})
     assert response.status_code == 200
     assert "Custom domain verified." in response.text
+    assert "Reverify DNS" in response.text
     assert isolated_app.get_custom_domain_for_user(owner["id"], "www.example.com")["verified_at"]
 
     response = alice_client.get("/", headers={"Host": "www.example.com"})
