@@ -52,8 +52,10 @@
       <p class="muted">
         <strong>Custom Domain:</strong>
         {{pages_settings["cname_domain"]}}
+        % if custom_domain and custom_domain["status"]:
+          <small class="muted">{{custom_domain["status"]}}</small>
         % if custom_domain and custom_domain["verified_at"]:
-          <small class="notice">Verified {{custom_domain["verified_at"]}}.</small>
+          <small class="notice">{{custom_domain["verified_at"]}}.</small>
         % end
       </p>
       <p class="muted">Create this DNS TXT record before verifying:</p>
