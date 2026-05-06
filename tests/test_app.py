@@ -793,10 +793,15 @@ def test_pages_host_serves_user_site_and_enabled_project_docs(isolated_app):
     settings_response = client.get("/alice/project/settings")
     assert settings_response.status_code == 200
     assert "Publish this repository" in settings_response.text
+    assert 'type="checkbox"' not in settings_response.text
+    assert 'name="pages_docs_enabled" value="1"' in settings_response.text
+    assert "Publish Pages" in settings_response.text
 
     response = client.post("/alice/project/settings", {"action": "update_pages", "pages_docs_enabled": "1"})
     assert response.status_code == 200
     assert "Pages settings updated." in response.text
+    assert 'name="pages_docs_enabled" value="0"' in response.text
+    assert "Unpublish Pages" in response.text
 
     response = client.get("/project/", headers={"Host": "alice.gitman.io"})
     assert response.status_code == 200

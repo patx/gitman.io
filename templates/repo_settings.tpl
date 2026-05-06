@@ -27,14 +27,20 @@
   <h2>Pages</h2>
   <p class="muted">Pages URL: <a href="{{pages_settings['url']}}">{{pages_settings["url"]}}</a></p>
   % if pages_settings["docs_publishable"]:
-    <form method="post">
+    <form class="panel-heading" method="post">
       {{!csrf_field()}}
       <input type="hidden" name="action" value="update_pages">
-      <label>
-        <input type="checkbox" name="pages_docs_enabled" value="1"{{" checked" if pages_settings["docs_enabled"] else ""}}>
-        Publish this repository's docs/ directory at {{pages_settings["url"]}}
-      </label>
-      <button class="button" type="submit">Save Pages settings</button>
+      <input type="hidden" name="pages_docs_enabled" value="{{0 if pages_settings['docs_enabled'] else 1}}">
+      <div>
+        % if pages_settings["docs_enabled"]:
+          <p><strong>Published</strong></p>
+          <p class="muted">This repository's docs/ directory is published at {{pages_settings["url"]}}.</p>
+        % else:
+          <p><strong>Not published</strong></p>
+          <p class="muted">Publish this repository's docs/ directory at {{pages_settings["url"]}}.</p>
+        % end
+      </div>
+      <button class="button" type="submit">{{"Unpublish Pages" if pages_settings["docs_enabled"] else "Publish Pages"}}</button>
     </form>
   % else:
     <p>Push static site files to this repository root to publish the user Pages site.</p>
