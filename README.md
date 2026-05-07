@@ -40,6 +40,7 @@ Pages-style static hosting is driven by the Git repository contents. A user site
 - `GITMAN_MAX_FORM_BYTES`: maximum browser form body size, default `65536`
 - `GITMAN_MAX_IMPORT_BYTES`: maximum Git bundle import upload size, default `5368709120`
 - `GITMAN_IMPORT_TIMEOUT_SECONDS`: maximum Git bundle verify/fetch time, default `3600`
+- `GITMAN_GUNICORN_TIMEOUT_SECONDS`: Gunicorn worker timeout, default `GITMAN_IMPORT_TIMEOUT_SECONDS + 300`
 - `GITMAN_MAX_RENDER_BYTES`: maximum file preview size, default `262144`
 - `GITMAN_MAX_GIT_RESPONSE_BYTES`: maximum Git HTTP backend response size, default `268435456`
 - `GITMAN_RATE_LIMIT_ENABLED`: set to `0` to disable login, signup, and Git push auth rate limiting
@@ -49,7 +50,7 @@ When `GITMAN_DEBUG` is off, `SECRET_KEY` must be set to a non-default value befo
 
 Repositories and their Git data live on local disk, so keep the database and repo root on persistent storage. The app uses SQLite WAL mode and shells out to Git, so the process user needs read/write access to both paths and access to the configured Git executable.
 
-For large bundle imports behind nginx and gunicorn, set nginx `client_max_body_size` above `GITMAN_MAX_IMPORT_BYTES`, raise nginx proxy read/send timeouts for long imports, and set gunicorn's worker timeout above `GITMAN_IMPORT_TIMEOUT_SECONDS`. The server also needs enough temporary disk space for the uploaded bundle plus the staged bare repository during import.
+For large bundle imports behind nginx and gunicorn, set nginx `client_max_body_size` above `GITMAN_MAX_IMPORT_BYTES`, raise nginx proxy read/send timeouts for long imports, and set Gunicorn's worker timeout above the expected upload plus import time. The repo includes `gunicorn.conf.py`, which Gunicorn loads when run from the project root and sets the worker timeout from `GITMAN_GUNICORN_TIMEOUT_SECONDS`. The server also needs enough temporary disk space for the uploaded bundle plus the staged bare repository during import.
 
 ## License
 

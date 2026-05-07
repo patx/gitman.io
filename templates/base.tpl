@@ -399,5 +399,66 @@
       });
     })();
   </script>
+  <script>
+    (() => {
+      const forms = document.querySelectorAll("[data-import-bundle-form]");
+      if (!forms.length) return;
+
+      const replaceDocument = (html) => {
+        document.open();
+        document.write(html);
+        document.close();
+      };
+
+      forms.forEach((form) => {
+        form.addEventListener("submit", async (event) => {
+          const input = form.querySelector("[data-import-bundle-file]");
+          const file = input && input.files ? input.files[0] : null;
+          if (!file || !window.fetch) return;
+
+          event.preventDefault();
+
+          const status = form.querySelector("[data-import-bundle-status]");
+          const button = form.querySelector("button[type='submit']");
+          const csrf = form.querySelector('input[name="_csrf_token"]');
+          const url = new URL(form.dataset.uploadUrl, window.location.origin);
+          url.searchParams.set("filename", file.name || "repo.bundle");
+
+          if (status) {
+            status.className = "muted";
+            status.textContent = "Uploading Git bundle...";
+            status.hidden = false;
+          }
+          if (button) {
+            button.dataset.originalLabel = button.textContent;
+            button.disabled = true;
+            button.textContent = "Importing...";
+          }
+
+          try {
+            const response = await fetch(url.toString(), {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/octet-stream",
+                "X-CSRF-Token": csrf ? csrf.value : "",
+              },
+              body: file,
+            });
+            replaceDocument(await response.text());
+          } catch (error) {
+            if (status) {
+              status.className = "alert";
+              status.textContent = "Upload failed. Check your connection and try again.";
+              status.hidden = false;
+            }
+            if (button) {
+              button.disabled = false;
+              button.textContent = button.dataset.originalLabel || "Import bundle";
+            }
+          }
+        });
+      });
+    })();
+  </script>
 </body>
 </html>

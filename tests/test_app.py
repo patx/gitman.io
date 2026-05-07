@@ -277,6 +277,21 @@ def create_origin_bundle_with_refs(bundle_path):
     return {"main": main_node, "feature": feature_node}
 
 
+def post_bundle_import(client, owner, repo_name, content, filename="repo.bundle"):
+    if hasattr(content, "read_bytes"):
+        content = content.read_bytes()
+    query = urlencode({"filename": filename})
+    return client.request(
+        "POST",
+        f"/{owner}/{repo_name}/settings/import-bundle?{query}",
+        headers={
+            "Content-Type": "application/octet-stream",
+            "X-CSRF-Token": client.csrf_token or "",
+        },
+        raw_body=content,
+    )
+
+
 def basic_auth(username, password):
     token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
     return {"Authorization": f"Basic {token}"}
@@ -769,12 +784,9 @@ def test_import_git_bundle_into_empty_repository_preserves_refs_and_metadata(iso
     assert settings_response.status_code == 200
     assert "Import Git bundle" in settings_response.text
     assert 'name="bundle"' in settings_response.text
+    assert 'data-import-bundle-form' in settings_response.text
 
-    response = client.post_multipart(
-        "/alice/imported/settings",
-        fields={"action": "import_bundle"},
-        files={"bundle": ("repo.bundle", bundle_path.read_bytes(), "application/octet-stream")},
-    )
+    response = post_bundle_import(client, "alice", "imported", bundle_path)
 
     assert response.status_code == 200
     assert "Git bundle imported." in response.text
@@ -803,11 +815,7 @@ def test_import_git_bundle_maps_origin_remote_branches(isolated_app, tmp_path):
     login_client(client, "alice")
     client.get("/alice/github-import/settings")
 
-    response = client.post_multipart(
-        "/alice/github-import/settings",
-        fields={"action": "import_bundle"},
-        files={"bundle": ("origin.bundle", bundle_path.read_bytes(), "application/octet-stream")},
-    )
+    response = post_bundle_import(client, "alice", "github-import", bundle_path, filename="origin.bundle")
 
     assert response.status_code == 200
     imported_path = isolated_app.repo_path("alice", "github-import")
@@ -828,11 +836,7 @@ def test_import_git_bundle_rejects_invalid_upload_without_replacing_repo(isolate
     login_client(client, "alice")
     client.get("/alice/empty/settings")
 
-    response = client.post_multipart(
-        "/alice/empty/settings",
-        fields={"action": "import_bundle"},
-        files={"bundle": ("repo.bundle", b"not a git bundle", "application/octet-stream")},
-    )
+    response = post_bundle_import(client, "alice", "empty", b"not a git bundle")
 
     assert response.status_code == 200
     assert "Uploaded file is not a valid Git bundle." in response.text
@@ -878,11 +882,7 @@ def test_import_git_bundle_size_limit_returns_413(isolated_app, monkeypatch):
     login_client(client, "alice")
     client.get("/alice/empty/settings")
 
-    response = client.post_multipart(
-        "/alice/empty/settings",
-        fields={"action": "import_bundle"},
-        files={"bundle": ("repo.bundle", b"x" * 200, "application/octet-stream")},
-    )
+    response = post_bundle_import(client, "alice", "empty", b"x" * 200)
 
     assert response.status_code == 413
     assert "Request body too large." in response.text

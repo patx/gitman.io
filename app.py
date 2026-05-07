@@ -253,6 +253,12 @@ class UploadTooLarge(ValueError):
     pass
 
 
+class StreamingUpload:
+    def __init__(self, filename, file):
+        self.filename = filename
+        self.file = file
+
+
 def validate_startup_config():
     if not DEBUG and SECRET_KEY == DEFAULT_SECRET_KEY:
         raise RuntimeError("SECRET_KEY must be set to a non-default value when GITMAN_DEBUG is disabled.")
@@ -581,9 +587,15 @@ def csrf_field():
     )
 
 
+def request_content_type():
+    return (request.environ.get("CONTENT_TYPE") or request.get_header("Content-Type") or "").lower()
+
+
 def validate_csrf_token():
     expected = request.get_cookie(CSRF_COOKIE_NAME, secret=SECRET_KEY)
-    submitted = request.forms.get(CSRF_FORM_FIELD, "")
+    submitted = request.get_header("X-CSRF-Token", "") or request.query.get(CSRF_FORM_FIELD, "")
+    if not submitted and not request_content_type().startswith("application/octet-stream"):
+        submitted = request.forms.get(CSRF_FORM_FIELD, "")
     if not expected or not submitted or not hmac.compare_digest(expected, submitted):
         abort(403, "Invalid CSRF token.")
 
@@ -597,12 +609,16 @@ def request_content_length():
 
 def is_repo_settings_multipart_request():
     path = request.environ.get("PATH_INFO", request.path) or ""
-    content_type = (request.environ.get("CONTENT_TYPE") or request.get_header("Content-Type") or "").lower()
-    return path.endswith("/settings") and content_type.startswith("multipart/form-data")
+    return path.endswith("/settings") and request_content_type().startswith("multipart/form-data")
+
+
+def is_repo_settings_import_stream_request():
+    path = request.environ.get("PATH_INFO", request.path) or ""
+    return path.endswith("/settings/import-bundle") and request_content_type().startswith("application/octet-stream")
 
 
 def browser_post_size_limit():
-    if is_repo_settings_multipart_request():
+    if is_repo_settings_multipart_request() or is_repo_settings_import_stream_request():
         return MAX_IMPORT_BYTES
     return MAX_FORM_BYTES
 
@@ -3634,6 +3650,31 @@ def render_repo_settings_page(repo, path, contributor_username="", error=None, n
         notice=notice,
         **repo_page_context(repo, path),
     )
+
+
+@app.post("/<owner>/<repo_name>/settings/import-bundle")
+def repo_settings_import_bundle(owner, repo_name):
+    user = require_login()
+    repo = get_repo(owner, repo_name)
+    if not repo:
+        abort(404, "Repository not found.")
+    if not user_owns_repo(user, repo):
+        abort(403, "Only the owner can update repository settings.")
+    if not request_content_type().startswith("application/octet-stream"):
+        abort(400, "Git bundle uploads must use application/octet-stream.")
+
+    path = repo_path(owner, repo_name)
+    filename = os.path.basename(request.query.get("filename", "repo.bundle")) or "repo.bundle"
+    upload = StreamingUpload(filename, request.environ["wsgi.input"])
+    try:
+        import_git_bundle(repo, path, upload)
+        updated_repo = get_repo(owner, repo_name)
+        return render_repo_settings_page(updated_repo, path, notice="Git bundle imported.")
+    except UploadTooLarge as exc:
+        abort(413, str(exc))
+    except (ValueError, GitCommandError) as exc:
+        repo = get_repo(owner, repo_name) or repo
+        return render_repo_settings_page(repo, path, error=str(exc))
 
 
 @app.route("/<owner>/<repo_name>/settings", method=["GET", "POST"])
