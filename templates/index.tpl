@@ -1,6 +1,6 @@
 % rebase("base.tpl", title="GitMan activity", user=user, error=error, notice=notice)
 
-<section class="panel">
+<section class="panel" style="border-bottom: none;">
   <div class="panel-heading">
     <div>
             <p class ="eyebrow">GitMan.io</p>
