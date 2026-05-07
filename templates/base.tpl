@@ -437,7 +437,7 @@
           }
 
           try {
-            const chunkSize = 16 * 1024 * 1024;
+            const chunkSize = 4 * 1024 * 1024;
             const uploadId = (
               crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
             ).replace(/[^A-Za-z0-9._-]/g, "");
@@ -452,8 +452,9 @@
 
               let response = null;
               let lastError = null;
-              for (let attempt = 1; attempt <= 4; attempt += 1) {
+              for (let attempt = 1; attempt <= 8; attempt += 1) {
                 try {
+                  url.searchParams.set("retry", String(attempt));
                   response = await fetch(url.toString(), {
                     method: "POST",
                     headers: {
@@ -467,9 +468,9 @@
                 } catch (error) {
                   lastError = error;
                 }
-                if (attempt < 4) {
-                  if (status) status.textContent = `Retrying upload chunk... ${attempt}/3`;
-                  await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+                if (attempt < 8) {
+                  if (status) status.textContent = `Retrying upload chunk... ${attempt}/7`;
+                  await new Promise((resolve) => setTimeout(resolve, Math.min(attempt * 2000, 15000)));
                 }
               }
               if (!response || !response.ok) throw lastError || new Error("Upload failed.");

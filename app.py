@@ -1,4 +1,5 @@
 import base64
+from contextlib import contextmanager
 import datetime as dt
 import hashlib
 import hmac
@@ -69,6 +70,8 @@ MAX_FORM_BYTES = env_int("GITMAN_MAX_FORM_BYTES", 64 * 1024)
 MAX_IMPORT_BYTES = env_int("GITMAN_MAX_IMPORT_BYTES", 2 * 1024 * 1024 * 1024)
 IMPORT_UPLOAD_CHUNK_BYTES = 1024 * 1024
 GIT_IMPORT_TIMEOUT_SECONDS = env_int("GITMAN_IMPORT_TIMEOUT_SECONDS", 3600, minimum=1)
+GIT_IMPORT_NICE = env_int("GITMAN_GIT_IMPORT_NICE", 10, minimum=0)
+GIT_IMPORT_PACK_THREADS = env_int("GITMAN_GIT_IMPORT_PACK_THREADS", 1, minimum=1)
 MAX_RENDER_BYTES = env_int("GITMAN_MAX_RENDER_BYTES", 256 * 1024)
 MAX_GIT_RESPONSE_BYTES = env_int("GITMAN_MAX_GIT_RESPONSE_BYTES", 256 * 1024 * 1024)
 PERF_LOG_THRESHOLD_MS = env_int("GITMAN_PERF_LOG_THRESHOLD_MS", 250, minimum=0)
@@ -292,11 +295,21 @@ def configure_db_connection(conn):
     conn.execute("PRAGMA synchronous = NORMAL")
 
 
-def db_connect():
+def open_db_connection():
     conn = sqlite3.connect(DB_PATH, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000)
     conn.row_factory = sqlite3.Row
     configure_db_connection(conn)
     return conn
+
+
+@contextmanager
+def db_connect():
+    conn = open_db_connection()
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def init_db():
@@ -1445,11 +1458,17 @@ def log_perf(label, elapsed_seconds, detail=""):
     print(f"[gitman-perf] {label} took {elapsed_ms}ms{suffix}", file=sys.stderr, flush=True)
 
 
-def run_git(args, cwd=None, timeout=15, check=True, text=True):
+def run_git(args, cwd=None, timeout=15, check=True, text=True, nice_value=0, git_config=None):
     env = git_env()
+    command = [git_executable(env)]
+    for key, value in (git_config or {}).items():
+        command.extend(["-c", f"{key}={value}"])
+    command.extend(args)
+    if nice_value > 0:
+        command = ["nice", "-n", str(nice_value), *command]
     started = time.monotonic()
     completed = subprocess.run(
-        [git_executable(env), *args],
+        command,
         cwd=cwd,
         capture_output=True,
         text=text,
@@ -1559,8 +1578,16 @@ def fork_repository(owner, source_repo, name, description):
 
 
 def run_git_import(args, cwd=None, check=True):
+    git_config = {"pack.threads": GIT_IMPORT_PACK_THREADS}
     try:
-        return run_git(args, cwd=cwd, timeout=GIT_IMPORT_TIMEOUT_SECONDS, check=check)
+        return run_git(
+            args,
+            cwd=cwd,
+            timeout=GIT_IMPORT_TIMEOUT_SECONDS,
+            check=check,
+            nice_value=GIT_IMPORT_NICE,
+            git_config=git_config,
+        )
     except subprocess.TimeoutExpired as exc:
         raise GitCommandError("Git import timed out.", 124) from exc
 
@@ -1615,7 +1642,7 @@ def parse_nonnegative_int(value, name):
     return parsed
 
 
-def save_upload_chunk(source, destination, expected_size):
+def save_upload_chunk(source, destination, expected_size, offset):
     written = 0
     with destination.open("ab") as target:
         remaining = expected_size
@@ -1627,6 +1654,11 @@ def save_upload_chunk(source, destination, expected_size):
             written += len(chunk)
             remaining -= len(chunk)
     if written != expected_size:
+        try:
+            with destination.open("r+b") as target:
+                target.truncate(offset)
+        except OSError:
+            pass
         raise ValueError("Upload chunk was incomplete.")
     return written
 
@@ -3764,34 +3796,43 @@ def git_http_backend_response(repo, auth_user):
     )
     if auth_user:
         env["REMOTE_USER"] = auth_user["username"]
+    git_protocol = request.get_header("Git-Protocol", "")
+    if git_protocol:
+        env["HTTP_GIT_PROTOCOL"] = git_protocol
+    content_encoding = request.get_header("Content-Encoding", "")
+    if content_encoding:
+        env["HTTP_CONTENT_ENCODING"] = content_encoding
 
-    completed = subprocess.run(
+    stderr_file = tempfile.TemporaryFile()
+    process = subprocess.Popen(
         [git_http_backend_executable()],
-        input=body,
-        capture_output=True,
-        timeout=60,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=stderr_file,
         env=env,
     )
-    if MAX_GIT_RESPONSE_BYTES and len(completed.stdout) > MAX_GIT_RESPONSE_BYTES:
-        return HTTPResponse(
-            "Git response too large.\n",
-            status=413,
-            content_type="text/plain; charset=utf-8",
-        )
-    if completed.returncode != 0 and not completed.stdout:
-        message = completed.stderr.decode("utf-8", "replace").strip() or "Git HTTP backend failed."
-        raise GitCommandError(message, completed.returncode)
-
-    raw = completed.stdout
-    if b"\r\n\r\n" in raw:
-        header_bytes, response_body = raw.split(b"\r\n\r\n", 1)
-        header_lines = header_bytes.decode("latin-1").split("\r\n")
-    elif b"\n\n" in raw:
-        header_bytes, response_body = raw.split(b"\n\n", 1)
-        header_lines = header_bytes.decode("latin-1").split("\n")
-    else:
+    try:
+        process.stdin.write(body)
+        process.stdin.close()
         header_lines = []
-        response_body = raw
+        while True:
+            line = process.stdout.readline()
+            if not line:
+                break
+            stripped = line.rstrip(b"\r\n")
+            if not stripped:
+                break
+            header_lines.append(stripped.decode("latin-1"))
+
+        if not header_lines and process.poll() is not None and process.returncode != 0:
+            stderr_file.seek(0)
+            message = stderr_file.read().decode("utf-8", "replace").strip() or "Git HTTP backend failed."
+            raise GitCommandError(message, process.returncode)
+    except Exception:
+        process.kill()
+        process.wait()
+        stderr_file.close()
+        raise
 
     status_code = 200
     headers = {}
@@ -3809,7 +3850,21 @@ def git_http_backend_response(repo, auth_user):
         else:
             headers[key] = value
 
-    return HTTPResponse(body=response_body, status=status_code, headers=headers)
+    def stream_git_response():
+        try:
+            while True:
+                chunk = process.stdout.read(1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+            process.wait()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            stderr_file.close()
+
+    return HTTPResponse(body=stream_git_response(), status=status_code, headers=headers)
 
 
 @app.route("/static/<filename:path>")
@@ -4095,7 +4150,7 @@ def repo_settings_import_bundle_chunk(owner, repo_name):
         abort(409, "Upload chunk offset mismatch.")
 
     try:
-        save_upload_chunk(request.environ["wsgi.input"], chunk_path, chunk_size)
+        save_upload_chunk(request.environ["wsgi.input"], chunk_path, chunk_size, offset)
         current_size = chunk_path.stat().st_size
         if current_size < total:
             return HTTPResponse("OK\n", content_type="text/plain; charset=utf-8")
@@ -4109,8 +4164,7 @@ def repo_settings_import_bundle_chunk(owner, repo_name):
     except UploadTooLarge as exc:
         abort(413, str(exc))
     except (ValueError, GitCommandError) as exc:
-        repo = get_repo(owner, repo_name) or repo
-        return render_repo_settings_page(repo, path, error=str(exc))
+        return HTTPResponse(f"{exc}\n", status=400, content_type="text/plain; charset=utf-8")
     finally:
         try:
             if chunk_path.exists() and chunk_path.stat().st_size >= total:
