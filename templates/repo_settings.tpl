@@ -23,6 +23,23 @@
   </form>
 </section>
 
+% if commit_count == 0:
+<section class="panel">
+  <h2>Import Git bundle</h2>
+  <p class="muted">Create a bundle from the source repository, then upload it here.</p>
+  <pre>git bundle create repo.bundle --all</pre>
+  <form method="post" enctype="multipart/form-data">
+    {{!csrf_field()}}
+    <input type="hidden" name="action" value="import_bundle">
+    <label>
+      Git bundle
+      <input name="bundle" type="file" accept=".bundle,application/octet-stream" required>
+    </label>
+    <button class="button" type="submit">Import bundle</button>
+  </form>
+</section>
+% end
+
 <section class="panel">
   <h2>Pages</h2>
   % if pages_settings["docs_publishable"]:

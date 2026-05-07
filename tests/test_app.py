@@ -69,22 +69,55 @@ class WsgiClient:
     def post(self, path, data=None, headers=None):
         return self.request("POST", path, data=data, headers=headers)
 
-    def request(self, method, path, data=None, headers=None):
+    def post_multipart(self, path, fields=None, files=None, headers=None):
+        fields = dict(fields or {})
+        files = files or {}
+        headers = headers or {}
+        if gitman.CSRF_FORM_FIELD not in fields and self.csrf_token:
+            fields[gitman.CSRF_FORM_FIELD] = self.csrf_token
+
+        boundary = "----gitman-test-boundary"
+        body = bytearray()
+        for name, value in fields.items():
+            body.extend(f"--{boundary}\r\n".encode("ascii"))
+            body.extend(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
+            body.extend(str(value).encode("utf-8"))
+            body.extend(b"\r\n")
+        for name, file_info in files.items():
+            filename, content, content_type = file_info
+            if isinstance(content, str):
+                content = content.encode("utf-8")
+            body.extend(f"--{boundary}\r\n".encode("ascii"))
+            body.extend(
+                (
+                    f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+                    f"Content-Type: {content_type}\r\n\r\n"
+                ).encode("utf-8")
+            )
+            body.extend(content)
+            body.extend(b"\r\n")
+        body.extend(f"--{boundary}--\r\n".encode("ascii"))
+
+        multipart_headers = {"Content-Type": f"multipart/form-data; boundary={boundary}", **headers}
+        return self.request("POST", path, headers=multipart_headers, raw_body=bytes(body))
+
+    def request(self, method, path, data=None, headers=None, raw_body=None):
         headers = headers or {}
         split = urlsplit(path)
-        body = b""
-        if method == "POST" and data is None and not split.path.startswith("/git/") and self.csrf_token:
-            data = {}
-        if data is not None:
-            if (
-                method == "POST"
-                and not split.path.startswith("/git/")
-                and gitman.CSRF_FORM_FIELD not in data
-                and self.csrf_token
-            ):
-                data = {**data, gitman.CSRF_FORM_FIELD: self.csrf_token}
-            body = urlencode(data, doseq=True).encode("utf-8")
-            headers = {"Content-Type": "application/x-www-form-urlencoded", **headers}
+        body = raw_body or b""
+        if raw_body is None:
+            if method == "POST" and data is None and not split.path.startswith("/git/") and self.csrf_token:
+                data = {}
+            if data is not None:
+                if (
+                    method == "POST"
+                    and not split.path.startswith("/git/")
+                    and gitman.CSRF_FORM_FIELD not in data
+                    and self.csrf_token
+                ):
+                    data = {**data, gitman.CSRF_FORM_FIELD: self.csrf_token}
+                body = urlencode(data, doseq=True).encode("utf-8")
+                headers = {"Content-Type": "application/x-www-form-urlencoded", **headers}
         environ = {
             "REQUEST_METHOD": method,
             "SCRIPT_NAME": "",
@@ -195,6 +228,53 @@ def commit_file(repo_path, relative_path, content, message="initial commit", use
         current_branch = gitman.run_git(["branch", "--show-current"], cwd=work_path).stdout.strip() or "main"
         gitman.run_git(["push", "origin", f"HEAD:refs/heads/{current_branch}"], cwd=work_path, timeout=60)
         return node
+
+
+def create_bundle_with_refs(bundle_path):
+    source_path = bundle_path.parent / "source"
+    gitman.run_git(["init", str(source_path)])
+    gitman.run_git(["checkout", "-b", "main"], cwd=source_path)
+    gitman.run_git(["config", "user.name", "Alice"], cwd=source_path)
+    gitman.run_git(["config", "user.email", "alice@example.test"], cwd=source_path)
+    source_path.joinpath("README.md").write_text("# Imported\n", encoding="utf-8")
+    gitman.run_git(["add", "README.md"], cwd=source_path)
+    gitman.run_git(["commit", "-m", "initial import"], cwd=source_path)
+    main_node = gitman.run_git(["rev-parse", "HEAD"], cwd=source_path).stdout.strip()
+    gitman.run_git(["tag", "v1.0"], cwd=source_path)
+    gitman.run_git(["checkout", "-b", "feature"], cwd=source_path)
+    source_path.joinpath("feature.txt").write_text("feature work\n", encoding="utf-8")
+    gitman.run_git(["add", "feature.txt"], cwd=source_path)
+    gitman.run_git(["commit", "-m", "feature work"], cwd=source_path)
+    feature_node = gitman.run_git(["rev-parse", "HEAD"], cwd=source_path).stdout.strip()
+    gitman.run_git(["bundle", "create", str(bundle_path), "--all"], cwd=source_path, timeout=60)
+    return {"main": main_node, "feature": feature_node}
+
+
+def create_origin_bundle_with_refs(bundle_path):
+    remote_path = bundle_path.parent / "remote.git"
+    seed_path = bundle_path.parent / "seed"
+    clone_path = bundle_path.parent / "clone"
+    gitman.run_git(["init", "--bare", str(remote_path)])
+    gitman.run_git(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=remote_path)
+    gitman.run_git(["clone", str(remote_path), str(seed_path)])
+    gitman.run_git(["config", "user.name", "Alice"], cwd=seed_path)
+    gitman.run_git(["config", "user.email", "alice@example.test"], cwd=seed_path)
+    seed_path.joinpath("README.md").write_text("# Imported\n", encoding="utf-8")
+    gitman.run_git(["add", "README.md"], cwd=seed_path)
+    gitman.run_git(["commit", "-m", "initial import"], cwd=seed_path)
+    main_node = gitman.run_git(["rev-parse", "HEAD"], cwd=seed_path).stdout.strip()
+    gitman.run_git(["tag", "v1.0"], cwd=seed_path)
+    gitman.run_git(["push", "-u", "origin", "main"], cwd=seed_path)
+    gitman.run_git(["push", "origin", "v1.0"], cwd=seed_path)
+    gitman.run_git(["checkout", "-b", "feature"], cwd=seed_path)
+    seed_path.joinpath("feature.txt").write_text("feature work\n", encoding="utf-8")
+    gitman.run_git(["add", "feature.txt"], cwd=seed_path)
+    gitman.run_git(["commit", "-m", "feature work"], cwd=seed_path)
+    feature_node = gitman.run_git(["rev-parse", "HEAD"], cwd=seed_path).stdout.strip()
+    gitman.run_git(["push", "-u", "origin", "feature"], cwd=seed_path)
+    gitman.run_git(["clone", str(remote_path), str(clone_path)])
+    gitman.run_git(["bundle", "create", str(bundle_path), "--all"], cwd=clone_path, timeout=60)
+    return {"main": main_node, "feature": feature_node}
 
 
 def basic_auth(username, password):
@@ -675,6 +755,132 @@ def test_create_repository_rolls_back_database_and_files_when_git_init_fails(iso
 
     assert isolated_app.get_repo("alice", "broken") is None
     assert not isolated_app.repo_path("alice", "broken").exists()
+
+
+def test_import_git_bundle_into_empty_repository_preserves_refs_and_metadata(isolated_app, tmp_path):
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "imported", "Imported repository")
+    bundle_path = tmp_path / "repo.bundle"
+    nodes = create_bundle_with_refs(bundle_path)
+
+    client = WsgiClient(isolated_app.app)
+    login_client(client, "alice")
+    settings_response = client.get("/alice/imported/settings")
+    assert settings_response.status_code == 200
+    assert "Import Git bundle" in settings_response.text
+    assert 'name="bundle"' in settings_response.text
+
+    response = client.post_multipart(
+        "/alice/imported/settings",
+        fields={"action": "import_bundle"},
+        files={"bundle": ("repo.bundle", bundle_path.read_bytes(), "application/octet-stream")},
+    )
+
+    assert response.status_code == 200
+    assert "Git bundle imported." in response.text
+    assert "Import Git bundle" not in response.text
+
+    imported_path = isolated_app.repo_path("alice", "imported")
+    assert isolated_app.repo_head_branch(imported_path) == "main"
+    assert isolated_app.run_git(["config", "gitman.owner"], cwd=imported_path).stdout.strip() == "alice"
+    assert isolated_app.run_git(["config", "gitman.name"], cwd=imported_path).stdout.strip() == "imported"
+    assert isolated_app.run_git(["config", "http.receivepack"], cwd=imported_path).stdout.strip() == "true"
+    assert isolated_app.repo_has_revision(imported_path, nodes["main"])
+    assert isolated_app.repo_has_revision(imported_path, nodes["feature"])
+    assert isolated_app.git_files(imported_path) == ["README.md"]
+    assert "feature.txt" in isolated_app.git_files(imported_path, "refs/heads/feature")
+    assert {branch["name"] for branch in isolated_app.list_repo_branches(imported_path)} == {"main", "feature"}
+    assert {tag["name"] for tag in isolated_app.list_repo_tags(imported_path)} == {"v1.0"}
+
+
+def test_import_git_bundle_maps_origin_remote_branches(isolated_app, tmp_path):
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "github-import", "")
+    bundle_path = tmp_path / "origin.bundle"
+    nodes = create_origin_bundle_with_refs(bundle_path)
+
+    client = WsgiClient(isolated_app.app)
+    login_client(client, "alice")
+    client.get("/alice/github-import/settings")
+
+    response = client.post_multipart(
+        "/alice/github-import/settings",
+        fields={"action": "import_bundle"},
+        files={"bundle": ("origin.bundle", bundle_path.read_bytes(), "application/octet-stream")},
+    )
+
+    assert response.status_code == 200
+    imported_path = isolated_app.repo_path("alice", "github-import")
+    branch_names = {branch["name"] for branch in isolated_app.list_repo_branches(imported_path)}
+    assert branch_names == {"main", "feature"}
+    assert "HEAD" not in branch_names
+    assert isolated_app.repo_has_revision(imported_path, nodes["main"])
+    assert isolated_app.repo_has_revision(imported_path, nodes["feature"])
+    assert "feature.txt" in isolated_app.git_files(imported_path, "refs/heads/feature")
+
+
+def test_import_git_bundle_rejects_invalid_upload_without_replacing_repo(isolated_app):
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "empty", "")
+    path = isolated_app.repo_path("alice", "empty")
+
+    client = WsgiClient(isolated_app.app)
+    login_client(client, "alice")
+    client.get("/alice/empty/settings")
+
+    response = client.post_multipart(
+        "/alice/empty/settings",
+        fields={"action": "import_bundle"},
+        files={"bundle": ("repo.bundle", b"not a git bundle", "application/octet-stream")},
+    )
+
+    assert response.status_code == 200
+    assert "Uploaded file is not a valid Git bundle." in response.text
+    assert isolated_app.commit_count(path) == 0
+    assert path.joinpath("objects").is_dir()
+    assert path.joinpath("HEAD").read_text(encoding="utf-8").strip() == "ref: refs/heads/main"
+
+
+def test_import_git_bundle_size_limit_returns_413(isolated_app, monkeypatch):
+    monkeypatch.setattr(gitman, "MAX_IMPORT_BYTES", 100)
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "empty", "")
+
+    client = WsgiClient(isolated_app.app)
+    login_client(client, "alice")
+    client.get("/alice/empty/settings")
+
+    response = client.post_multipart(
+        "/alice/empty/settings",
+        fields={"action": "import_bundle"},
+        files={"bundle": ("repo.bundle", b"x" * 200, "application/octet-stream")},
+    )
+
+    assert response.status_code == 413
+    assert "Request body too large." in response.text
+
+
+def test_import_git_bundle_form_is_owner_only_and_empty_repo_only(isolated_app):
+    owner = create_user("alice")
+    create_user("bob")
+    isolated_app.create_repository(owner, "demo", "")
+
+    owner_client = WsgiClient(isolated_app.app)
+    login_client(owner_client, "alice")
+    empty_response = owner_client.get("/alice/demo/settings")
+    assert empty_response.status_code == 200
+    assert "Import Git bundle" in empty_response.text
+
+    commit_file(isolated_app.repo_path("alice", "demo"), "README.md", "# Demo\n", user="alice")
+    non_empty_response = owner_client.get("/alice/demo/settings")
+    assert non_empty_response.status_code == 200
+    assert "Import Git bundle" not in non_empty_response.text
+
+    bob_client = WsgiClient(isolated_app.app)
+    login_client(bob_client, "bob")
+    bob_response = bob_client.get("/alice/demo/settings")
+    assert bob_response.status_code == 403
+    assert "Only the owner can update repository settings." in bob_response.text
 
 
 def test_star_and_contributor_helpers_update_database_and_git_config(isolated_app):

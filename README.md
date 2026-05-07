@@ -21,6 +21,8 @@ All repositories are public for web browsing, clone, and fetch. Pushes go throug
 
 Creating a repository initializes an empty bare Git repo with `HEAD` pointing at `main`. The repository page shows clone instructions until the first push lands, then renders a README preview when it finds `README.md`, `README.rst`, `README.txt`, or `README`.
 
+Empty repositories can also be populated from a full Git bundle in repository settings. From the existing repository, run `git bundle create repo.bundle --all`, then upload `repo.bundle` before any commits have been pushed to the GitMan repository.
+
 The web UI reads directly from Git for source browsing, raw file downloads, commit history, branches, tags, archives, diffs, and README content. Markdown README files are rendered to sanitized HTML before display, and repository descriptions plus issue, pull request, and commit comments support sanitized links.
 
 Issues, comments, stars, contributors, forks, and pull request records are stored in SQLite. Forking creates a bare clone of the source repository. Pull requests compare a source ref against a target branch, and maintainers can close or merge them from the browser.
@@ -36,6 +38,8 @@ Pages-style static hosting is driven by the Git repository contents. A user site
 - `GITMAN_GIT_BINARY`: Git executable name or full path, default `git`
 - `GITMAN_PAGES_DOMAIN`: wildcard Pages domain, default `gitman.io`
 - `GITMAN_MAX_FORM_BYTES`: maximum browser form body size, default `65536`
+- `GITMAN_MAX_IMPORT_BYTES`: maximum Git bundle import upload size, default `5368709120`
+- `GITMAN_IMPORT_TIMEOUT_SECONDS`: maximum Git bundle verify/fetch time, default `3600`
 - `GITMAN_MAX_RENDER_BYTES`: maximum file preview size, default `262144`
 - `GITMAN_MAX_GIT_RESPONSE_BYTES`: maximum Git HTTP backend response size, default `268435456`
 - `GITMAN_RATE_LIMIT_ENABLED`: set to `0` to disable login, signup, and Git push auth rate limiting
@@ -44,6 +48,8 @@ Pages-style static hosting is driven by the Git repository contents. A user site
 When `GITMAN_DEBUG` is off, `SECRET_KEY` must be set to a non-default value before startup.
 
 Repositories and their Git data live on local disk, so keep the database and repo root on persistent storage. The app uses SQLite WAL mode and shells out to Git, so the process user needs read/write access to both paths and access to the configured Git executable.
+
+For large bundle imports behind nginx and gunicorn, set nginx `client_max_body_size` above `GITMAN_MAX_IMPORT_BYTES`, raise nginx proxy read/send timeouts for long imports, and set gunicorn's worker timeout above `GITMAN_IMPORT_TIMEOUT_SECONDS`. The server also needs enough temporary disk space for the uploaded bundle plus the staged bare repository during import.
 
 ## License
 

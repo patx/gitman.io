@@ -64,6 +64,8 @@ DEBUG = env_bool("GITMAN_DEBUG")
 PASSWORD_ITERATIONS = 260_000
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 MAX_FORM_BYTES = env_int("GITMAN_MAX_FORM_BYTES", 64 * 1024)
+MAX_IMPORT_BYTES = env_int("GITMAN_MAX_IMPORT_BYTES", 5 * 1024 * 1024 * 1024)
+GIT_IMPORT_TIMEOUT_SECONDS = env_int("GITMAN_IMPORT_TIMEOUT_SECONDS", 3600, minimum=1)
 MAX_RENDER_BYTES = env_int("GITMAN_MAX_RENDER_BYTES", 256 * 1024)
 MAX_GIT_RESPONSE_BYTES = env_int("GITMAN_MAX_GIT_RESPONSE_BYTES", 256 * 1024 * 1024)
 GIT_BINARY = os.environ.get("GITMAN_GIT_BINARY", "git")
@@ -243,6 +245,10 @@ class GitCommandError(RuntimeError):
 
 
 class GitResponseTooLarge(RuntimeError):
+    pass
+
+
+class UploadTooLarge(ValueError):
     pass
 
 
@@ -588,6 +594,18 @@ def request_content_length():
         return 0
 
 
+def is_repo_settings_multipart_request():
+    path = request.environ.get("PATH_INFO", request.path) or ""
+    content_type = (request.environ.get("CONTENT_TYPE") or request.get_header("Content-Type") or "").lower()
+    return path.endswith("/settings") and content_type.startswith("multipart/form-data")
+
+
+def browser_post_size_limit():
+    if is_repo_settings_multipart_request():
+        return MAX_IMPORT_BYTES
+    return MAX_FORM_BYTES
+
+
 def auth_rate_key(kind, identifier=""):
     identifier = (identifier or "").strip().lower()[:100]
     remote_addr = request.environ.get("REMOTE_ADDR", "")
@@ -656,7 +674,8 @@ def dispatch_pages_host():
 def enforce_browser_post_security():
     if request.method != "POST" or is_git_request_path():
         return
-    if MAX_FORM_BYTES and request_content_length() > MAX_FORM_BYTES:
+    size_limit = browser_post_size_limit()
+    if size_limit and request_content_length() > size_limit:
         abort(413, "Request body too large.")
     validate_csrf_token()
 
@@ -1447,6 +1466,143 @@ def fork_repository(owner, source_repo, name, description):
         if path.exists():
             shutil.rmtree(path)
         raise
+
+
+def run_git_import(args, cwd=None, check=True):
+    try:
+        return run_git(args, cwd=cwd, timeout=GIT_IMPORT_TIMEOUT_SECONDS, check=check)
+    except subprocess.TimeoutExpired as exc:
+        raise GitCommandError("Git import timed out.", 124) from exc
+
+
+def repo_is_empty(path):
+    return commit_count(path) == 0
+
+
+def save_bundle_upload(upload, destination):
+    if not upload or not getattr(upload, "filename", ""):
+        raise ValueError("Choose a Git bundle to import.")
+
+    size = 0
+    source = upload.file
+    try:
+        source.seek(0)
+    except (AttributeError, OSError):
+        pass
+
+    with destination.open("wb") as target:
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if MAX_IMPORT_BYTES and size > MAX_IMPORT_BYTES:
+                raise UploadTooLarge("Request body too large.")
+            target.write(chunk)
+
+    if size == 0:
+        raise ValueError("Uploaded bundle is empty.")
+
+
+def bundle_ref_names(bundle_path):
+    completed = run_git_import(["bundle", "list-heads", str(bundle_path)])
+    refs = []
+    for line in completed.stdout.splitlines():
+        parts = line.strip().split(maxsplit=1)
+        if len(parts) == 2:
+            refs.append(parts[1])
+    return refs
+
+
+def origin_branch_refspecs_for_bundle(bundle_path):
+    refs = bundle_ref_names(bundle_path)
+    branch_names = {ref.removeprefix("refs/heads/") for ref in refs if ref.startswith("refs/heads/")}
+    refspecs = []
+    prefix = "refs/remotes/origin/"
+    for ref in refs:
+        if not ref.startswith(prefix):
+            continue
+        branch_name = ref[len(prefix) :]
+        if not branch_name or branch_name == "HEAD" or branch_name in branch_names:
+            continue
+        refspecs.append(f"+{ref}:refs/heads/{branch_name}")
+        branch_names.add(branch_name)
+    return refspecs
+
+
+def fetch_bundle_refspecs(bundle_path, staging_path, refspecs):
+    for index in range(0, len(refspecs), 100):
+        run_git_import(["fetch", str(bundle_path), *refspecs[index : index + 100]], cwd=staging_path)
+
+
+def import_git_bundle(repo, path, upload):
+    if not path.exists():
+        raise ValueError("Repository directory does not exist.")
+    if not repo_is_empty(path):
+        raise ValueError("Git bundles can only be imported into empty repositories.")
+
+    owner = repo["owner_username"]
+    name = repo["name"]
+    bundle_path = None
+    staging_path = None
+    backup_path = None
+    moved_target_to_backup = False
+    installed_staging = False
+    success = False
+
+    try:
+        with tempfile.NamedTemporaryFile(prefix="gitman-import-", suffix=".bundle", delete=False) as bundle_file:
+            bundle_path = Path(bundle_file.name)
+        save_bundle_upload(upload, bundle_path)
+
+        verification = run_git_import(["bundle", "verify", str(bundle_path)], cwd=path, check=False)
+        if verification.returncode != 0:
+            raise ValueError("Uploaded file is not a valid Git bundle.")
+
+        staging_path = Path(tempfile.mkdtemp(prefix=f".{name}-import-", dir=path.parent))
+        shutil.rmtree(staging_path)
+        run_git_import(["init", "--bare", str(staging_path)])
+        run_git_import(
+            [
+                "fetch",
+                str(bundle_path),
+                "+refs/heads/*:refs/heads/*",
+                "+refs/tags/*:refs/tags/*",
+            ],
+            cwd=staging_path,
+        )
+        fetch_bundle_refspecs(bundle_path, staging_path, origin_branch_refspecs_for_bundle(bundle_path))
+        if not list_repo_branches(staging_path):
+            raise ValueError("Uploaded Git bundle does not contain any branches.")
+        default_code_ref(staging_path)
+        write_git_metadata(staging_path, owner, name, repo["description"])
+
+        if not repo_is_empty(path):
+            raise ValueError("Repository is no longer empty.")
+
+        backup_path = path.with_name(f".{name}-import-backup-{secrets.token_hex(8)}")
+        path.rename(backup_path)
+        moved_target_to_backup = True
+        staging_path.rename(path)
+        installed_staging = True
+        staging_path = None
+
+        with db_connect() as conn:
+            conn.execute("UPDATE repositories SET updated_at = ? WHERE id = ?", (utcnow(), repo["id"]))
+        success = True
+    except Exception:
+        if installed_staging and path.exists():
+            shutil.rmtree(path)
+        if moved_target_to_backup and backup_path and backup_path.exists() and not path.exists():
+            backup_path.rename(path)
+        raise
+    finally:
+        if bundle_path and bundle_path.exists():
+            bundle_path.unlink()
+        if staging_path and staging_path.exists():
+            shutil.rmtree(staging_path)
+        if success and backup_path and backup_path.exists():
+            shutil.rmtree(backup_path)
 
 
 def delete_repository(repo, path):
@@ -3527,6 +3683,17 @@ def repo_settings(owner, repo_name):
             repo = get_repo(owner, repo_name)
             return render_repo_settings_page(repo, path, notice="Custom domain verified.")
         except ValueError as exc:
+            return render_repo_settings_page(repo, path, error=str(exc))
+
+    if action == "import_bundle":
+        try:
+            import_git_bundle(repo, path, request.files.get("bundle"))
+            updated_repo = get_repo(owner, repo_name)
+            return render_repo_settings_page(updated_repo, path, notice="Git bundle imported.")
+        except UploadTooLarge as exc:
+            abort(413, str(exc))
+        except (ValueError, GitCommandError) as exc:
+            repo = get_repo(owner, repo_name) or repo
             return render_repo_settings_page(repo, path, error=str(exc))
 
     description = request.forms.get("description", "").strip()[:500]
