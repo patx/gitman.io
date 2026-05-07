@@ -38,7 +38,7 @@ Pages-style static hosting is driven by the Git repository contents. A user site
 - `GITMAN_GIT_BINARY`: Git executable name or full path, default `git`
 - `GITMAN_PAGES_DOMAIN`: wildcard Pages domain, default `gitman.io`
 - `GITMAN_MAX_FORM_BYTES`: maximum browser form body size, default `65536`
-- `GITMAN_MAX_IMPORT_BYTES`: maximum Git bundle import upload size, default `5368709120`
+- `GITMAN_MAX_IMPORT_BYTES`: maximum Git bundle import upload size, default `2147483648`
 - `GITMAN_IMPORT_TIMEOUT_SECONDS`: maximum Git bundle verify/fetch time, default `3600`
 - `GITMAN_GUNICORN_TIMEOUT_SECONDS`: Gunicorn worker timeout, default `GITMAN_IMPORT_TIMEOUT_SECONDS + 300`
 - `GITMAN_MAX_RENDER_BYTES`: maximum file preview size, default `262144`

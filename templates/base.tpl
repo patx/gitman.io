@@ -423,6 +423,7 @@
           const csrf = form.querySelector('input[name="_csrf_token"]');
           const url = new URL(form.dataset.uploadUrl, window.location.origin);
           url.searchParams.set("filename", file.name || "repo.bundle");
+          if (file.size <= 0) return;
 
           if (status) {
             status.className = "muted";
@@ -436,15 +437,55 @@
           }
 
           try {
-            const response = await fetch(url.toString(), {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/octet-stream",
-                "X-CSRF-Token": csrf ? csrf.value : "",
-              },
-              body: file,
-            });
-            replaceDocument(await response.text());
+            const chunkSize = 16 * 1024 * 1024;
+            const uploadId = (
+              crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
+            ).replace(/[^A-Za-z0-9._-]/g, "");
+            let offset = 0;
+            let finalResponse = null;
+
+            while (offset < file.size) {
+              const end = Math.min(offset + chunkSize, file.size);
+              url.searchParams.set("upload_id", uploadId);
+              url.searchParams.set("offset", String(offset));
+              url.searchParams.set("total", String(file.size));
+
+              let response = null;
+              let lastError = null;
+              for (let attempt = 1; attempt <= 4; attempt += 1) {
+                try {
+                  response = await fetch(url.toString(), {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/octet-stream",
+                      "X-CSRF-Token": csrf ? csrf.value : "",
+                    },
+                    body: file.slice(offset, end),
+                  });
+                  if (response.ok) break;
+                  lastError = new Error(await response.text());
+                } catch (error) {
+                  lastError = error;
+                }
+                if (attempt < 4) {
+                  if (status) status.textContent = `Retrying upload chunk... ${attempt}/3`;
+                  await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+                }
+              }
+              if (!response || !response.ok) throw lastError || new Error("Upload failed.");
+
+              offset = end;
+              if (offset < file.size) {
+                if (status) {
+                  status.textContent = `Uploading Git bundle... ${Math.floor((offset / file.size) * 100)}%`;
+                }
+              } else {
+                finalResponse = response;
+              }
+            }
+
+            if (status) status.textContent = "Importing Git bundle...";
+            replaceDocument(await finalResponse.text());
           } catch (error) {
             if (status) {
               status.className = "alert";

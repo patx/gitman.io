@@ -64,7 +64,7 @@ DEBUG = env_bool("GITMAN_DEBUG")
 PASSWORD_ITERATIONS = 260_000
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 MAX_FORM_BYTES = env_int("GITMAN_MAX_FORM_BYTES", 64 * 1024)
-MAX_IMPORT_BYTES = env_int("GITMAN_MAX_IMPORT_BYTES", 1 * 1024 * 1024 * 1024)
+MAX_IMPORT_BYTES = env_int("GITMAN_MAX_IMPORT_BYTES", 2 * 1024 * 1024 * 1024)
 IMPORT_UPLOAD_CHUNK_BYTES = 1024 * 1024
 GIT_IMPORT_TIMEOUT_SECONDS = env_int("GITMAN_IMPORT_TIMEOUT_SECONDS", 3600, minimum=1)
 MAX_RENDER_BYTES = env_int("GITMAN_MAX_RENDER_BYTES", 256 * 1024)
@@ -257,6 +257,9 @@ class StreamingUpload:
     def __init__(self, filename, file):
         self.filename = filename
         self.file = file
+
+
+UPLOAD_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 
 
 def validate_startup_config():
@@ -614,7 +617,13 @@ def is_repo_settings_multipart_request():
 
 def is_repo_settings_import_stream_request():
     path = request.environ.get("PATH_INFO", request.path) or ""
-    return path.endswith("/settings/import-bundle") and request_content_type().startswith("application/octet-stream")
+    return (
+        (
+            path.endswith("/settings/import-bundle")
+            or path.endswith("/settings/import-bundle/chunk")
+        )
+        and request_content_type().startswith("application/octet-stream")
+    )
 
 
 def browser_post_size_limit():
@@ -1524,6 +1533,38 @@ def save_bundle_upload(upload, destination):
 
     if size == 0:
         raise ValueError("Uploaded bundle is empty.")
+
+
+def import_upload_chunks_dir():
+    path = Path(tempfile.gettempdir()) / "gitman-import-chunks"
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return path
+
+
+def parse_nonnegative_int(value, name):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        abort(400, f"Invalid {name}.")
+    if parsed < 0:
+        abort(400, f"Invalid {name}.")
+    return parsed
+
+
+def save_upload_chunk(source, destination, expected_size):
+    written = 0
+    with destination.open("ab") as target:
+        remaining = expected_size
+        while remaining > 0:
+            chunk = source.read(min(IMPORT_UPLOAD_CHUNK_BYTES, remaining))
+            if not chunk:
+                break
+            target.write(chunk)
+            written += len(chunk)
+            remaining -= len(chunk)
+    if written != expected_size:
+        raise ValueError("Upload chunk was incomplete.")
+    return written
 
 
 def bundle_ref_names(bundle_path):
@@ -3675,6 +3716,67 @@ def repo_settings_import_bundle(owner, repo_name):
     except (ValueError, GitCommandError) as exc:
         repo = get_repo(owner, repo_name) or repo
         return render_repo_settings_page(repo, path, error=str(exc))
+
+
+@app.post("/<owner>/<repo_name>/settings/import-bundle/chunk")
+def repo_settings_import_bundle_chunk(owner, repo_name):
+    user = require_login()
+    repo = get_repo(owner, repo_name)
+    if not repo:
+        abort(404, "Repository not found.")
+    if not user_owns_repo(user, repo):
+        abort(403, "Only the owner can update repository settings.")
+    if not request_content_type().startswith("application/octet-stream"):
+        abort(400, "Git bundle uploads must use application/octet-stream.")
+
+    path = repo_path(owner, repo_name)
+    filename = os.path.basename(request.query.get("filename", "repo.bundle")) or "repo.bundle"
+    upload_id = request.query.get("upload_id", "")
+    if not UPLOAD_ID_RE.match(upload_id):
+        abort(400, "Invalid upload id.")
+
+    total = parse_nonnegative_int(request.query.get("total", ""), "total")
+    offset = parse_nonnegative_int(request.query.get("offset", ""), "offset")
+    chunk_size = request_content_length()
+    if total <= 0:
+        abort(400, "Upload is empty.")
+    if MAX_IMPORT_BYTES and total > MAX_IMPORT_BYTES:
+        abort(413, "Request body too large.")
+    if chunk_size <= 0 or offset + chunk_size > total:
+        abort(400, "Invalid upload chunk.")
+
+    chunks_dir = import_upload_chunks_dir()
+    chunk_path = chunks_dir / f"{user['id']}-{repo['id']}-{upload_id}.bundle"
+    if offset == 0 and chunk_path.exists():
+        chunk_path.unlink()
+
+    current_size = chunk_path.stat().st_size if chunk_path.exists() else 0
+    if current_size != offset:
+        abort(409, "Upload chunk offset mismatch.")
+
+    try:
+        save_upload_chunk(request.environ["wsgi.input"], chunk_path, chunk_size)
+        current_size = chunk_path.stat().st_size
+        if current_size < total:
+            return HTTPResponse("OK\n", content_type="text/plain; charset=utf-8")
+        if current_size != total:
+            raise ValueError("Upload size mismatch.")
+
+        with chunk_path.open("rb") as bundle_file:
+            import_git_bundle(repo, path, StreamingUpload(filename, bundle_file))
+        updated_repo = get_repo(owner, repo_name)
+        return render_repo_settings_page(updated_repo, path, notice="Git bundle imported.")
+    except UploadTooLarge as exc:
+        abort(413, str(exc))
+    except (ValueError, GitCommandError) as exc:
+        repo = get_repo(owner, repo_name) or repo
+        return render_repo_settings_page(repo, path, error=str(exc))
+    finally:
+        try:
+            if chunk_path.exists() and chunk_path.stat().st_size >= total:
+                chunk_path.unlink()
+        except OSError:
+            pass
 
 
 @app.route("/<owner>/<repo_name>/settings", method=["GET", "POST"])
