@@ -48,9 +48,7 @@ Pages-style static hosting is driven by the Git repository contents. A user site
 
 When `GITMAN_DEBUG` is off, `SECRET_KEY` must be set to a non-default value before startup.
 
-Repositories and their Git data live on local disk, so keep the database and repo root on persistent storage. The app uses SQLite WAL mode and shells out to Git, so the process user needs read/write access to both paths and access to the configured Git executable.
-
-For large bundle imports behind nginx and gunicorn, set nginx `client_max_body_size` above `GITMAN_MAX_IMPORT_BYTES`, raise nginx proxy read/send timeouts for long imports, and set Gunicorn's worker timeout above the expected upload plus import time. The repo includes `gunicorn.conf.py`, which Gunicorn loads when run from the project root and sets the worker timeout from `GITMAN_GUNICORN_TIMEOUT_SECONDS`. The server also needs enough temporary disk space for the uploaded bundle plus the staged bare repository during import.
+Repositories and their Git data live on local disk, so keep the database and repo root on persistent storage. The app uses SQLite WAL mode and shells out to Git, so the process user needs read/write access to both paths and access to the configured Git executable. It is recommended to run behind nginx/gunicorn.
 
 ## License
 
