@@ -11,6 +11,8 @@ import secrets
 import shutil
 import sqlite3
 import subprocess
+import sys
+import threading
 import time
 import tempfile
 from socketserver import ThreadingMixIn
@@ -69,6 +71,10 @@ IMPORT_UPLOAD_CHUNK_BYTES = 1024 * 1024
 GIT_IMPORT_TIMEOUT_SECONDS = env_int("GITMAN_IMPORT_TIMEOUT_SECONDS", 3600, minimum=1)
 MAX_RENDER_BYTES = env_int("GITMAN_MAX_RENDER_BYTES", 256 * 1024)
 MAX_GIT_RESPONSE_BYTES = env_int("GITMAN_MAX_GIT_RESPONSE_BYTES", 256 * 1024 * 1024)
+PERF_LOG_THRESHOLD_MS = env_int("GITMAN_PERF_LOG_THRESHOLD_MS", 250, minimum=0)
+REF_PICKER_LIMIT = env_int("GITMAN_REF_PICKER_LIMIT", 25, minimum=1)
+REF_LIST_LIMIT = env_int("GITMAN_REF_LIST_LIMIT", 200, minimum=1)
+REF_SEARCH_COMMIT_LIMIT = env_int("GITMAN_REF_SEARCH_COMMIT_LIMIT", 100, minimum=1)
 GIT_BINARY = os.environ.get("GITMAN_GIT_BINARY", "git")
 PAGES_DOMAIN = os.environ.get("GITMAN_PAGES_DOMAIN", "gitman.io").strip().lower().rstrip(".")
 DEFAULT_EXEC_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -89,6 +95,8 @@ TARGET_PULL_REQUEST_REF_TYPES = {REF_TYPE_BRANCH}
 REF_PICKER_TABS = {"overview", "source", "commits", "tags", "branches"}
 REF_QUERY_KEYS = {"ref", "ref_type", "ref_value"}
 REF_VALUE_SEPARATOR = "|"
+REPO_INDEX_READY = "ready"
+REPO_INDEX_INDEXING = "indexing"
 DEFAULT_BRANCH_CANDIDATES = ("main", "master")
 SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style)\b[^>]*>.*?</\1>")
 PAGES_VERIFY_TXT_PREFIX = "_gitman-pages"
@@ -206,6 +214,8 @@ CSP_HEADER = (
     "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com"
 )
 AUTH_FAILURES = {}
+REPO_INDEX_THREADS = set()
+REPO_INDEX_LOCK = threading.Lock()
 
 POST_RECEIVE_HOOK = """#!/bin/sh
 set_default_head() {
@@ -414,6 +424,20 @@ def init_db():
                 UNIQUE(user_id, domain)
             );
 
+            CREATE TABLE IF NOT EXISTS repo_metadata (
+                repo_id INTEGER PRIMARY KEY REFERENCES repositories(id) ON DELETE CASCADE,
+                head_node TEXT NOT NULL DEFAULT '',
+                default_branch TEXT NOT NULL DEFAULT '',
+                commit_count INTEGER NOT NULL DEFAULT 0,
+                branch_count INTEGER NOT NULL DEFAULT 0,
+                tag_count INTEGER NOT NULL DEFAULT 0,
+                branch_refs_json TEXT NOT NULL DEFAULT '[]',
+                tag_refs_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT '',
+                indexed_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_repositories_owner ON repositories(owner_id);
             CREATE INDEX IF NOT EXISTS idx_issues_repo_number ON issues(repo_id, number);
             CREATE INDEX IF NOT EXISTS idx_issues_repo_status ON issues(repo_id, status);
@@ -432,6 +456,7 @@ def init_db():
         ensure_repository_collaboration_columns(conn)
         ensure_repository_pages_columns(conn)
         ensure_pull_request_ref_columns(conn)
+        ensure_repo_metadata_table(conn)
 
 
 def ensure_user_profile_columns(conn):
@@ -479,6 +504,26 @@ def ensure_pull_request_ref_columns(conn):
     for name, ddl in ref_columns.items():
         if name not in columns:
             conn.execute(ddl)
+
+
+def ensure_repo_metadata_table(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS repo_metadata (
+            repo_id INTEGER PRIMARY KEY REFERENCES repositories(id) ON DELETE CASCADE,
+            head_node TEXT NOT NULL DEFAULT '',
+            default_branch TEXT NOT NULL DEFAULT '',
+            commit_count INTEGER NOT NULL DEFAULT 0,
+            branch_count INTEGER NOT NULL DEFAULT 0,
+            tag_count INTEGER NOT NULL DEFAULT 0,
+            branch_refs_json TEXT NOT NULL DEFAULT '[]',
+            tag_refs_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT '',
+            indexed_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
 
 
 def normalize_slug(value, label):
@@ -1390,8 +1435,19 @@ def git_executable(env):
     )
 
 
+def log_perf(label, elapsed_seconds, detail=""):
+    if PERF_LOG_THRESHOLD_MS <= 0:
+        return
+    elapsed_ms = int(elapsed_seconds * 1000)
+    if elapsed_ms < PERF_LOG_THRESHOLD_MS:
+        return
+    suffix = f" {detail}" if detail else ""
+    print(f"[gitman-perf] {label} took {elapsed_ms}ms{suffix}", file=sys.stderr, flush=True)
+
+
 def run_git(args, cwd=None, timeout=15, check=True, text=True):
     env = git_env()
+    started = time.monotonic()
     completed = subprocess.run(
         [git_executable(env), *args],
         cwd=cwd,
@@ -1402,6 +1458,7 @@ def run_git(args, cwd=None, timeout=15, check=True, text=True):
         timeout=timeout,
         env=env,
     )
+    log_perf("git", time.monotonic() - started, " ".join(args[:4]))
     if check and completed.returncode != 0:
         stderr = completed.stderr if text else completed.stderr.decode("utf-8", "replace")
         raise GitCommandError(stderr.strip() or "Git command failed.", completed.returncode)
@@ -1431,6 +1488,9 @@ def create_repository(owner, name, description):
         run_git(["init", "--bare", str(path)], timeout=20)
         run_git(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=path)
         write_git_metadata(path, owner["username"], name, description)
+        repo = get_repo(owner["username"], name)
+        if repo:
+            write_repo_metadata(repo, path)
     except Exception:
         with db_connect() as conn:
             conn.execute(
@@ -1483,6 +1543,10 @@ def fork_repository(owner, source_repo, name, description):
     try:
         run_git(["clone", "--bare", str(source_path), str(path)], timeout=60)
         write_git_metadata(path, owner["username"], name, description)
+        repo = get_repo(owner["username"], name)
+        if repo:
+            mark_repo_indexing(repo["id"], path)
+            schedule_repo_metadata_refresh(repo["id"])
     except Exception:
         with db_connect() as conn:
             conn.execute(
@@ -1652,6 +1716,8 @@ def import_git_bundle(repo, path, upload):
 
         with db_connect() as conn:
             conn.execute("UPDATE repositories SET updated_at = ? WHERE id = ?", (utcnow(), repo["id"]))
+        mark_repo_indexing(repo["id"], path)
+        schedule_repo_metadata_refresh(repo["id"])
         success = True
     except Exception:
         if installed_staging and path.exists():
@@ -1721,6 +1787,35 @@ def git_files(path, revision="HEAD"):
     return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
 
 
+def git_tree_entries(path, revision="HEAD", subpath=""):
+    if not revision or is_null_revision(revision):
+        return []
+    treeish = f"{revision}:{subpath}" if subpath else revision
+    completed = run_git(["ls-tree", "-z", treeish], cwd=path, check=False)
+    if completed.returncode != 0:
+        stderr = (completed.stderr or "").lower()
+        if "not a tree object" in stderr or "not a valid object name" in stderr or "does not exist" in stderr:
+            return []
+        raise GitCommandError(completed.stderr.strip() or "Unable to list tree.", completed.returncode)
+    entries = []
+    prefix = f"{subpath}/" if subpath else ""
+    for record in completed.stdout.split("\0"):
+        if not record:
+            continue
+        meta, _, name = record.partition("\t")
+        parts = meta.split()
+        if len(parts) < 2 or not name:
+            continue
+        entries.append(
+            {
+                "name": name,
+                "path": f"{prefix}{name}" if prefix else name,
+                "type": "dir" if parts[1] == "tree" else "file",
+            }
+        )
+    return sorted(entries, key=lambda item: (item["type"] != "dir", item["name"].lower()))
+
+
 def git_cat(path, file_path, revision="HEAD", text=True):
     completed = run_git(["show", f"{revision}:{file_path}"], cwd=path, check=True, text=text)
     return completed.stdout if text else completed.stdout
@@ -1743,6 +1838,9 @@ def truncate_text_for_render(content, label="Preview"):
 
 def read_file_bytes(path, file_path, revision="HEAD"):
     if not revision or is_null_revision(revision):
+        raise GitCommandError("File not found.")
+    object_type = run_git(["cat-file", "-t", f"{revision}:{file_path}"], cwd=path, check=False)
+    if object_type.returncode != 0 or object_type.stdout.strip() != "blob":
         raise GitCommandError("File not found.")
     completed = run_git(["show", f"{revision}:{file_path}"], cwd=path, check=False, text=False)
     if completed.returncode != 0:
@@ -1769,19 +1867,20 @@ def build_tree(files, subpath):
     return sorted(entries.values(), key=lambda item: (item["type"] != "dir", item["name"].lower()))
 
 
-def readme_for_repo(path, files, revision="HEAD"):
-    by_lower = {file_path.lower(): file_path for file_path in files}
+def readme_for_repo(path, files=None, revision="HEAD"):
+    by_lower = {file_path.lower(): file_path for file_path in (files or [])}
     for candidate in README_CANDIDATES:
-        actual = by_lower.get(candidate.lower())
+        actual = by_lower.get(candidate.lower()) if by_lower else candidate
         if actual:
             try:
                 return actual, git_cat(path, actual, revision=revision)
             except GitCommandError:
-                return actual, ""
+                if by_lower:
+                    return actual, ""
     return None, None
 
 
-def readme_preview_for_repo(path, files, revision="HEAD"):
+def readme_preview_for_repo(path, files=None, revision="HEAD"):
     name, readme = readme_for_repo(path, files, revision=revision)
     if readme is None:
         return name, readme, False
@@ -2280,10 +2379,10 @@ def commit_log(path, limit=50, revision=None):
     return commits
 
 
-def all_commit_refs(path):
+def all_commit_refs(path, limit=REF_SEARCH_COMMIT_LIMIT):
     format_arg = "%H%x1f%h%x1f%ad%x1f%s%x1e"
     completed = run_git(
-        ["log", "--all", "--date=iso-strict", f"--format={format_arg}"],
+        ["log", "--all", "-n", str(limit), "--date=iso-strict", f"--format={format_arg}"],
         cwd=path,
         check=False,
     )
@@ -2315,8 +2414,12 @@ def all_commit_refs(path):
     return commits
 
 
-def list_repo_tags(path):
-    completed = run_git(["for-each-ref", "--format=%(refname:short)", "refs/tags"], cwd=path, check=False)
+def list_repo_tags(path, limit=None):
+    args = ["for-each-ref", "--sort=-creatordate", "--format=%(refname:short)"]
+    if limit:
+        args.extend(["--count", str(limit)])
+    args.append("refs/tags")
+    completed = run_git(args, cwd=path, check=False)
     if completed.returncode != 0:
         raise GitCommandError(completed.stderr.strip() or "Unable to read repository tags.", completed.returncode)
 
@@ -2347,6 +2450,33 @@ def list_repo_tags(path):
         )
     tags.sort(key=newest_revision_sort_key, reverse=True)
     return tags
+
+
+def tag_ref(path, name):
+    name = (name or "").strip()
+    if not name:
+        return None
+    completed = run_git(["show-ref", "--verify", "--quiet", f"refs/tags/{name}"], cwd=path, check=False)
+    if completed.returncode != 0:
+        return None
+    commit = revision_info(path, f"refs/tags/{name}^{{commit}}")
+    if not commit:
+        return None
+    return {
+        "type": REF_TYPE_TAG,
+        "name": name,
+        "label": f"tag {name}",
+        "rev": "",
+        "node": commit["node"],
+        "short_node": commit["short_node"],
+        "branch": "",
+        "active": False,
+        "closed": False,
+        "local": False,
+        "is_default": False,
+        "date": commit["date"],
+        "summary": commit["summary"],
+    }
 
 
 def revision_info(path, revision):
@@ -2429,10 +2559,53 @@ def commit_ref(path, revision):
     return info
 
 
-def list_repo_branches(path):
+def parse_branch_record(record, head_branch=""):
+    parts = record.split("\x00")
+    if len(parts) != 5:
+        return None
+    return {
+        "type": REF_TYPE_BRANCH,
+        "name": parts[0],
+        "label": f"branch {parts[0]}",
+        "node": parts[1],
+        "short_node": parts[2],
+        "rev": "",
+        "active": parts[0] == head_branch,
+        "closed": False,
+        "date": parts[3],
+        "summary": parts[4],
+        "is_default": False,
+    }
+
+
+def branch_ref(path, name):
+    name = (name or "").strip()
+    if not name:
+        return None
+    exists = run_git(["show-ref", "--verify", "--quiet", f"refs/heads/{name}"], cwd=path, check=False)
+    if exists.returncode != 0:
+        return None
     format_arg = "%(refname:short)%00%(objectname)%00%(objectname:short)%00%(committerdate:iso-strict)%00%(subject)"
     completed = run_git(
-        ["for-each-ref", f"--format={format_arg}", "refs/heads"],
+        ["for-each-ref", f"--format={format_arg}", f"refs/heads/{name}"],
+        cwd=path,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise GitCommandError(completed.stderr.strip() or "Unable to read repository branch.", completed.returncode)
+    record = completed.stdout.splitlines()[0] if completed.stdout.splitlines() else ""
+    branch = parse_branch_record(record, repo_head_branch(path)) if record else None
+    return branch if branch and branch["name"] == name else None
+
+
+def list_repo_branches(path, limit=None):
+    format_arg = "%(refname:short)%00%(objectname)%00%(objectname:short)%00%(committerdate:iso-strict)%00%(subject)"
+    args = ["for-each-ref", "--sort=-committerdate", f"--format={format_arg}"]
+    if limit:
+        args.extend(["--count", str(limit)])
+    args.append("refs/heads")
+    completed = run_git(
+        args,
         cwd=path,
         check=False,
     )
@@ -2444,24 +2617,9 @@ def list_repo_branches(path):
     for record in completed.stdout.splitlines():
         if not record:
             continue
-        parts = record.split("\x00")
-        if len(parts) != 5:
-            continue
-        branches.append(
-            {
-                "type": REF_TYPE_BRANCH,
-                "name": parts[0],
-                "label": f"branch {parts[0]}",
-                "node": parts[1],
-                "short_node": parts[2],
-                "rev": "",
-                "active": parts[0] == head_branch,
-                "closed": False,
-                "date": parts[3],
-                "summary": parts[4],
-                "is_default": False,
-            }
-        )
+        branch = parse_branch_record(record, head_branch)
+        if branch:
+            branches.append(branch)
     branches.sort(key=newest_revision_sort_key, reverse=True)
     return branches
 
@@ -2479,7 +2637,15 @@ def choose_default_branch(branches, head_branch=""):
 
 def default_code_ref(path):
     head_branch = repo_head_branch(path)
-    selected_branch = choose_default_branch(list_repo_branches(path), head_branch)
+    selected_branch = branch_ref(path, head_branch)
+    if not selected_branch:
+        for branch_name in DEFAULT_BRANCH_CANDIDATES:
+            selected_branch = branch_ref(path, branch_name)
+            if selected_branch:
+                break
+    if not selected_branch:
+        branches = list_repo_branches(path, limit=1)
+        selected_branch = branches[0] if branches else None
     if selected_branch:
         selected = dict(selected_branch)
         selected["active"] = True
@@ -2504,14 +2670,14 @@ def resolve_repo_ref(path, ref_type, ref_name=""):
     if ref_type == REF_TYPE_COMMIT:
         return commit_ref(path, ref_name)
     if ref_type == REF_TYPE_BRANCH:
-        for branch in list_repo_branches(path):
-            if branch["name"] == ref_name:
-                return dict(branch)
+        branch = branch_ref(path, ref_name)
+        if branch:
+            return dict(branch)
         raise ValueError("Branch not found.")
     if ref_type == REF_TYPE_TAG:
-        for tag in list_repo_tags(path):
-            if tag["name"] == ref_name:
-                return dict(tag)
+        tag = tag_ref(path, ref_name)
+        if tag:
+            return dict(tag)
         raise ValueError("Tag not found.")
     raise ValueError("Ref not found.")
 
@@ -2659,20 +2825,26 @@ def search_repo_refs(path, query):
     if not query:
         return []
 
-    refs = list_repo_branches(path)
-    refs.extend(list_repo_tags(path))
-    refs.extend(all_commit_refs(path))
+    refs = list_repo_branches(path, limit=REF_LIST_LIMIT)
+    refs.extend(list_repo_tags(path, limit=REF_LIST_LIMIT))
+    refs.extend(all_commit_refs(path, limit=REF_SEARCH_COMMIT_LIMIT))
     return [ref_search_result(ref) for ref in refs if ref_matches_query(ref, query)]
 
 
-def repo_ref_options(path, include_closed_branches=True, include_tip=True, include_tags=True):
-    branches = list_repo_branches(path)
+def cached_ref_rows(metadata, key):
+    if not metadata or metadata["status"] != REPO_INDEX_READY:
+        return []
+    return decode_cached_refs(metadata[key])
+
+
+def repo_ref_options(path, include_closed_branches=True, include_tip=True, include_tags=True, metadata=None):
+    branches = cached_ref_rows(metadata, "branch_refs_json") or list_repo_branches(path, limit=REF_PICKER_LIMIT)
     refs = []
     for branch in branches:
         if include_closed_branches or not branch["closed"]:
             refs.append(branch)
     if include_tags:
-        refs.extend(list_repo_tags(path))
+        refs.extend(cached_ref_rows(metadata, "tag_refs_json") or list_repo_tags(path, limit=REF_PICKER_LIMIT))
 
     refs.sort(key=newest_revision_sort_key, reverse=True)
     options = []
@@ -2687,13 +2859,19 @@ def repo_ref_options(path, include_closed_branches=True, include_tip=True, inclu
     return options
 
 
-def repo_ref_picker_options(path):
-    return [option for option in repo_ref_options(path) if option.get("is_initial")]
+def repo_ref_picker_options(path, metadata=None):
+    return [option for option in repo_ref_options(path, metadata=metadata) if option.get("is_initial")]
 
 
 def source_repo_ref_options(source_repo, include_tip=True):
     path = repo_path(source_repo["owner_username"], source_repo["name"])
-    options = repo_ref_options(path, include_closed_branches=True, include_tip=include_tip, include_tags=False)
+    options = repo_ref_options(
+        path,
+        include_closed_branches=True,
+        include_tip=include_tip,
+        include_tags=False,
+        metadata=repo_metadata_row(source_repo["id"]),
+    )
     for option in options:
         option["value"] = source_ref_option_value(
             source_repo["id"],
@@ -2708,7 +2886,7 @@ def target_repo_ref_options(path):
     return repo_ref_options(path, include_closed_branches=False, include_tip=False, include_tags=False)
 
 
-def commit_count(path, revision=None):
+def git_commit_count(path, revision=None):
     revision = revision_or_default(path, revision)
     if is_null_revision(revision):
         return 0
@@ -2722,6 +2900,159 @@ def commit_count(path, revision=None):
         return int(completed.stdout.strip())
     except ValueError:
         return 0
+
+
+def commit_count(path, revision=None):
+    return git_commit_count(path, revision)
+
+
+def ref_count(path, ref_prefix):
+    completed = run_git(["for-each-ref", "--format=%(refname)", ref_prefix], cwd=path, check=False)
+    if completed.returncode != 0:
+        raise GitCommandError(completed.stderr.strip() or "Unable to count refs.", completed.returncode)
+    return len([line for line in completed.stdout.splitlines() if line.strip()])
+
+
+def repo_metadata_row(repo_id):
+    with db_connect() as conn:
+        return conn.execute("SELECT * FROM repo_metadata WHERE repo_id = ?", (repo_id,)).fetchone()
+
+
+def decode_cached_refs(value):
+    try:
+        refs = json.loads(value or "[]")
+    except (TypeError, ValueError):
+        return []
+    return refs if isinstance(refs, list) else []
+
+
+def repo_metadata_for_context(repo, path):
+    metadata = repo_metadata_row(repo["id"])
+    if metadata:
+        if metadata["status"] == REPO_INDEX_INDEXING:
+            schedule_repo_metadata_refresh(repo["id"])
+        return metadata
+    mark_repo_indexing(repo["id"], path)
+    schedule_repo_metadata_refresh(repo["id"])
+    return repo_metadata_row(repo["id"])
+
+
+def write_repo_metadata(repo, path, status=REPO_INDEX_READY):
+    head_node = repo_tip_node(path) or ""
+    default_branch = repo_head_branch(path)
+    branch_refs = list_repo_branches(path, limit=REF_LIST_LIMIT)
+    tag_refs = list_repo_tags(path, limit=REF_LIST_LIMIT)
+    now = utcnow()
+    with db_connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO repo_metadata (
+                repo_id, head_node, default_branch, commit_count, branch_count, tag_count,
+                branch_refs_json, tag_refs_json, status, indexed_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(repo_id) DO UPDATE SET
+                head_node = excluded.head_node,
+                default_branch = excluded.default_branch,
+                commit_count = excluded.commit_count,
+                branch_count = excluded.branch_count,
+                tag_count = excluded.tag_count,
+                branch_refs_json = excluded.branch_refs_json,
+                tag_refs_json = excluded.tag_refs_json,
+                status = excluded.status,
+                indexed_at = excluded.indexed_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                repo["id"],
+                head_node,
+                default_branch,
+                git_commit_count(path, head_node),
+                ref_count(path, "refs/heads"),
+                ref_count(path, "refs/tags"),
+                json.dumps(branch_refs),
+                json.dumps(tag_refs),
+                status,
+                now if status == REPO_INDEX_READY else "",
+                now,
+            ),
+        )
+
+
+def mark_repo_indexing(repo_id, path=None):
+    now = utcnow()
+    head_node = ""
+    default_branch = ""
+    placeholder_count = 0
+    if path is not None and path.exists():
+        try:
+            head_node = repo_tip_node(path) or ""
+            default_branch = repo_head_branch(path)
+            placeholder_count = 1 if head_node else 0
+        except (GitCommandError, OSError):
+            pass
+    with db_connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO repo_metadata (repo_id, head_node, default_branch, commit_count, status, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(repo_id) DO UPDATE SET
+                head_node = CASE WHEN excluded.head_node != '' THEN excluded.head_node ELSE repo_metadata.head_node END,
+                default_branch = CASE
+                    WHEN excluded.default_branch != '' THEN excluded.default_branch
+                    ELSE repo_metadata.default_branch
+                END,
+                commit_count = CASE
+                    WHEN excluded.commit_count > repo_metadata.commit_count THEN excluded.commit_count
+                    ELSE repo_metadata.commit_count
+                END,
+                status = excluded.status,
+                updated_at = excluded.updated_at
+            """,
+            (repo_id, head_node, default_branch, placeholder_count, REPO_INDEX_INDEXING, now),
+        )
+
+
+def refresh_repo_metadata(repo_id):
+    repo = get_repo_by_id(repo_id)
+    if not repo:
+        return
+    path = repo_path(repo["owner_username"], repo["name"])
+    if not path.exists():
+        return
+    try:
+        write_repo_metadata(repo, path)
+    except Exception as exc:
+        log_perf("repo-index-error", PERF_LOG_THRESHOLD_MS / 1000 if PERF_LOG_THRESHOLD_MS else 1, str(exc))
+
+
+def schedule_repo_metadata_refresh(repo_id):
+    with REPO_INDEX_LOCK:
+        if repo_id in REPO_INDEX_THREADS:
+            return
+        REPO_INDEX_THREADS.add(repo_id)
+
+    def worker():
+        try:
+            refresh_repo_metadata(repo_id)
+        finally:
+            with REPO_INDEX_LOCK:
+                REPO_INDEX_THREADS.discard(repo_id)
+
+    threading.Thread(target=worker, name=f"gitman-index-{repo_id}", daemon=True).start()
+
+
+def cached_commit_count(repo, path, revision, metadata=None):
+    metadata = metadata or repo_metadata_row(repo["id"])
+    if (
+        metadata
+        and metadata["status"] in {REPO_INDEX_READY, REPO_INDEX_INDEXING}
+        and revision
+        and revision == metadata["head_node"]
+        and int(metadata["commit_count"] or 0) > 0
+    ):
+        return int(metadata["commit_count"] or 0)
+    return git_commit_count(path, revision)
 
 
 def repo_head_ref(path):
@@ -3211,6 +3542,8 @@ def merge_pull_request(pr, user):
             "UPDATE repositories SET updated_at = ? WHERE id = ?",
             (now, target_repo["id"]),
         )
+    mark_repo_indexing(target_repo["id"], target_path)
+    schedule_repo_metadata_refresh(target_repo["id"])
     return merge_node
 
 
@@ -3274,6 +3607,7 @@ def user_can_maintain_repo(user, repo):
 
 
 def repo_page_context(repo, path=None, selected_ref=None):
+    started = time.monotonic()
     if path is None:
         path = repo_path(repo["owner_username"], repo["name"])
     user = current_user()
@@ -3284,8 +3618,9 @@ def repo_page_context(repo, path=None, selected_ref=None):
     selected_revision = ref_revision(selected_ref)
     fork_target_id = repo["forked_from_repo_id"] or repo["id"]
     source_repo = get_repo_by_id(repo["forked_from_repo_id"]) if repo["forked_from_repo_id"] else None
-    return {
-        "commit_count": commit_count(path, selected_revision),
+    metadata = repo_metadata_for_context(repo, path)
+    context = {
+        "commit_count": cached_commit_count(repo, path, selected_revision, metadata),
         "issue_counts": issue_counts(repo["id"]),
         "pr_counts": pull_request_counts(repo["id"]),
         "star_count": repo_star_count(repo["id"]),
@@ -3296,9 +3631,13 @@ def repo_page_context(repo, path=None, selected_ref=None):
         "repo_active_tab": active_tab,
         "show_ref_picker": show_ref_picker,
         "source_repo": source_repo,
+        "repo_index_status": metadata["status"] if metadata else "",
+        "repo_indexing": bool(metadata and metadata["status"] == REPO_INDEX_INDEXING),
+        "repo_branch_count": int(metadata["branch_count"] or 0) if metadata else 0,
+        "repo_tag_count": int(metadata["tag_count"] or 0) if metadata else 0,
         "selected_ref": selected_ref,
         "selected_ref_label": ref_option_label(selected_ref) if selected_ref else "",
-        "ref_options": repo_ref_picker_options(path) if show_ref_picker else [],
+        "ref_options": repo_ref_picker_options(path, metadata=metadata) if show_ref_picker else [],
         "selected_ref_value": ref_option_value(
             selected_ref.get("type", REF_TYPE_TIP),
             selected_ref.get("name", ""),
@@ -3306,6 +3645,8 @@ def repo_page_context(repo, path=None, selected_ref=None):
         if selected_ref
         else "",
     }
+    log_perf("repo_page_context", time.monotonic() - started, f"{repo['owner_username']}/{repo['name']}")
+    return context
 
 
 def repo_active_tab(repo):
@@ -3618,8 +3959,7 @@ def repo_overview(owner, repo_name):
     path = repo_path(owner, repo_name)
     selected_ref = selected_repo_ref(path)
     revision = ref_revision(selected_ref)
-    files = git_files(path, revision)
-    readme_name, readme, readme_truncated = readme_preview_for_repo(path, files, revision=revision)
+    readme_name, readme, readme_truncated = readme_preview_for_repo(path, revision=revision)
     readme_is_markdown = is_markdown_file(readme_name)
     context = repo_page_context(repo, path, selected_ref=selected_ref)
     return render(
@@ -3866,10 +4206,15 @@ def repo_source(owner, repo_name, file_path=""):
     path = repo_path(owner, repo_name)
     selected_ref = selected_repo_ref(path)
     revision = ref_revision(selected_ref)
-    files = git_files(path, revision)
+    if file_path:
+        try:
+            content = read_file_bytes(path, file_path, revision=revision)
+        except GitCommandError:
+            content = None
+    else:
+        content = None
 
-    if file_path in files:
-        content = read_file_bytes(path, file_path, revision=revision)
+    if content is not None:
         is_binary = b"\0" in content[:4096]
         text_content = content.decode("utf-8", "replace") if not is_binary else ""
         return render(
@@ -3884,14 +4229,15 @@ def repo_source(owner, repo_name, file_path=""):
             **repo_page_context(repo, path, selected_ref=selected_ref),
         )
 
-    if file_path and not any(item.startswith(file_path + "/") for item in files):
+    entries = git_tree_entries(path, revision, file_path)
+    if file_path and not entries:
         abort(404, "Path not found.")
 
     return render(
         "source.tpl",
         repo=repo,
         current_path=file_path,
-        entries=build_tree(files, file_path),
+        entries=entries,
         quote_path=quote_path,
         **repo_page_context(repo, path, selected_ref=selected_ref),
     )
@@ -3906,10 +4252,10 @@ def repo_raw(owner, repo_name, file_path):
     path = repo_path(owner, repo_name)
     selected_ref = selected_repo_ref(path)
     revision = ref_revision(selected_ref)
-    files = git_files(path, revision)
-    if file_path not in files:
+    try:
+        content = read_file_bytes(path, file_path, revision=revision)
+    except GitCommandError:
         abort(404, "File not found.")
-    content = read_file_bytes(path, file_path, revision=revision)
     content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
     return HTTPResponse(content, content_type=content_type)
 
@@ -3953,10 +4299,16 @@ def repo_tags(owner, repo_name):
     if not repo:
         abort(404, "Repository not found.")
     path = repo_path(owner, repo_name)
+    metadata = repo_metadata_for_context(repo, path)
+    tag_count = int(metadata["tag_count"] or 0) if metadata else 0
+    tags = cached_ref_rows(metadata, "tag_refs_json") or list_repo_tags(path, limit=REF_LIST_LIMIT)
     return render(
         "tags.tpl",
         repo=repo,
-        tags=list_repo_tags(path),
+        tags=tags,
+        tags_truncated=bool(tag_count and tag_count > len(tags)),
+        tag_count=tag_count or len(tags),
+        ref_list_limit=REF_LIST_LIMIT,
         clone_url=clone_url(owner, repo_name),
         **repo_page_context(repo, path),
     )
@@ -3968,10 +4320,16 @@ def repo_branches(owner, repo_name):
     if not repo:
         abort(404, "Repository not found.")
     path = repo_path(owner, repo_name)
+    metadata = repo_metadata_for_context(repo, path)
+    branch_count = int(metadata["branch_count"] or 0) if metadata else 0
+    branches = cached_ref_rows(metadata, "branch_refs_json") or list_repo_branches(path, limit=REF_LIST_LIMIT)
     return render(
         "branches.tpl",
         repo=repo,
-        branches=list_repo_branches(path),
+        branches=branches,
+        branches_truncated=bool(branch_count and branch_count > len(branches)),
+        branch_count=branch_count or len(branches),
+        ref_list_limit=REF_LIST_LIMIT,
         clone_url=clone_url(owner, repo_name),
         **repo_page_context(repo, path),
     )
@@ -4356,7 +4714,14 @@ def git_http(owner, repo_name, git_path=""):
         clear_auth_failures("git", auth_user["username"])
         prepare_repo_for_receive(repo_path(owner, repo_name))
 
-    return git_http_backend_response(repo, auth_user)
+    git_response = git_http_backend_response(repo, auth_user)
+    if is_write and getattr(git_response, "status_code", 200) < 400:
+        now = utcnow()
+        with db_connect() as conn:
+            conn.execute("UPDATE repositories SET updated_at = ? WHERE id = ?", (now, repo["id"]))
+        mark_repo_indexing(repo["id"], repo_path(owner, repo_name))
+        schedule_repo_metadata_refresh(repo["id"])
+    return git_response
 
 
 @app.error(404)

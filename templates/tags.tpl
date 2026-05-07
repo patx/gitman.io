@@ -14,6 +14,9 @@
 
 <section class="panel">
   % if tags:
+    % if get("tags_truncated", False):
+      <p class="notice">Showing {{len(tags)}} of {{tag_count}} tags. Use ref search to find older tags.</p>
+    % end
     <ul class="commit-list">
       % for tag in tags:
         <li>

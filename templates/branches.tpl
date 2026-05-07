@@ -14,6 +14,9 @@
 
 <section class="panel">
   % if branches:
+    % if get("branches_truncated", False):
+      <p class="notice">Showing {{len(branches)}} of {{branch_count}} branches. Use ref search to find older branches.</p>
+    % end
     <ul class="commit-list">
       % for branch in branches:
         <li>
