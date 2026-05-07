@@ -841,6 +841,34 @@ def test_import_git_bundle_rejects_invalid_upload_without_replacing_repo(isolate
     assert path.joinpath("HEAD").read_text(encoding="utf-8").strip() == "ref: refs/heads/main"
 
 
+def test_save_bundle_upload_uses_import_chunk_size_and_removes_oversized_partial(tmp_path, monkeypatch):
+    class RecordingSource(BytesIO):
+        def __init__(self, content):
+            super().__init__(content)
+            self.read_sizes = []
+
+        def read(self, size=-1):
+            self.read_sizes.append(size)
+            return super().read(size)
+
+    class Upload:
+        filename = "repo.bundle"
+
+        def __init__(self, content):
+            self.file = RecordingSource(content)
+
+    monkeypatch.setattr(gitman, "MAX_IMPORT_BYTES", 10)
+    monkeypatch.setattr(gitman, "IMPORT_UPLOAD_CHUNK_BYTES", 4)
+    upload = Upload(b"x" * 12)
+    destination = tmp_path / "repo.bundle"
+
+    with pytest.raises(gitman.UploadTooLarge):
+        gitman.save_bundle_upload(upload, destination)
+
+    assert upload.file.read_sizes == [4, 4, 4]
+    assert not destination.exists()
+
+
 def test_import_git_bundle_size_limit_returns_413(isolated_app, monkeypatch):
     monkeypatch.setattr(gitman, "MAX_IMPORT_BYTES", 100)
     owner = create_user("alice")

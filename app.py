@@ -65,6 +65,7 @@ PASSWORD_ITERATIONS = 260_000
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 MAX_FORM_BYTES = env_int("GITMAN_MAX_FORM_BYTES", 64 * 1024)
 MAX_IMPORT_BYTES = env_int("GITMAN_MAX_IMPORT_BYTES", 5 * 1024 * 1024 * 1024)
+IMPORT_UPLOAD_CHUNK_BYTES = 1024 * 1024
 GIT_IMPORT_TIMEOUT_SECONDS = env_int("GITMAN_IMPORT_TIMEOUT_SECONDS", 3600, minimum=1)
 MAX_RENDER_BYTES = env_int("GITMAN_MAX_RENDER_BYTES", 256 * 1024)
 MAX_GIT_RESPONSE_BYTES = env_int("GITMAN_MAX_GIT_RESPONSE_BYTES", 256 * 1024 * 1024)
@@ -1490,15 +1491,20 @@ def save_bundle_upload(upload, destination):
     except (AttributeError, OSError):
         pass
 
-    with destination.open("wb") as target:
-        while True:
-            chunk = source.read(1024 * 1024)
-            if not chunk:
-                break
-            size += len(chunk)
-            if MAX_IMPORT_BYTES and size > MAX_IMPORT_BYTES:
-                raise UploadTooLarge("Request body too large.")
-            target.write(chunk)
+    try:
+        with destination.open("wb") as target:
+            while True:
+                chunk = source.read(IMPORT_UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if MAX_IMPORT_BYTES and size > MAX_IMPORT_BYTES:
+                    raise UploadTooLarge("Request body too large.")
+                target.write(chunk)
+    except UploadTooLarge:
+        if destination.exists():
+            destination.unlink()
+        raise
 
     if size == 0:
         raise ValueError("Uploaded bundle is empty.")
