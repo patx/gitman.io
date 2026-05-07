@@ -410,6 +410,15 @@
         document.close();
       };
 
+      const responseMessage = async (response, fallback) => {
+        try {
+          const text = (await response.text()).trim();
+          return text || fallback;
+        } catch (error) {
+          return fallback;
+        }
+      };
+
       forms.forEach((form) => {
         form.addEventListener("submit", async (event) => {
           const input = form.querySelector("[data-import-bundle-file]");
@@ -464,7 +473,10 @@
                     body: file.slice(offset, end),
                   });
                   if (response.ok) break;
-                  lastError = new Error(await response.text());
+                  lastError = new Error(
+                    await responseMessage(response, "Upload failed.")
+                  );
+                  if (response.status >= 400 && response.status < 500) break;
                 } catch (error) {
                   lastError = error;
                 }
@@ -490,7 +502,10 @@
           } catch (error) {
             if (status) {
               status.className = "alert";
-              status.textContent = "Upload failed. Check your connection and try again.";
+              status.textContent =
+                error && error.message
+                  ? error.message
+                  : "Upload failed. Check your connection and try again.";
               status.hidden = false;
             }
             if (button) {

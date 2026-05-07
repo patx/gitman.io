@@ -292,6 +292,55 @@ def post_bundle_import(client, owner, repo_name, content, filename="repo.bundle"
     )
 
 
+def post_bundle_import_chunks(client, owner, repo_name, content, filename="repo.bundle", chunk_size=10):
+    if hasattr(content, "read_bytes"):
+        content = content.read_bytes()
+    upload_id = "test-upload"
+    response = None
+    for offset in range(0, len(content), chunk_size):
+        chunk = content[offset : offset + chunk_size]
+        query = urlencode(
+            {
+                "filename": filename,
+                "upload_id": upload_id,
+                "offset": offset,
+                "total": len(content),
+            }
+        )
+        response = client.request(
+            "POST",
+            f"/{owner}/{repo_name}/settings/import-bundle/chunk?{query}",
+            headers={
+                "Content-Type": "application/octet-stream",
+                "X-CSRF-Token": client.csrf_token or "",
+            },
+            raw_body=chunk,
+        )
+        if response.status_code != 200 or offset + len(chunk) >= len(content):
+            return response
+    return response
+
+
+def post_bundle_import_chunk(client, owner, repo_name, chunk, offset, total, upload_id="test-upload"):
+    query = urlencode(
+        {
+            "filename": "repo.bundle",
+            "upload_id": upload_id,
+            "offset": offset,
+            "total": total,
+        }
+    )
+    return client.request(
+        "POST",
+        f"/{owner}/{repo_name}/settings/import-bundle/chunk?{query}",
+        headers={
+            "Content-Type": "application/octet-stream",
+            "X-CSRF-Token": client.csrf_token or "",
+        },
+        raw_body=chunk,
+    )
+
+
 def basic_auth(username, password):
     token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
     return {"Authorization": f"Basic {token}"}
@@ -825,6 +874,62 @@ def test_import_git_bundle_maps_origin_remote_branches(isolated_app, tmp_path):
     assert isolated_app.repo_has_revision(imported_path, nodes["main"])
     assert isolated_app.repo_has_revision(imported_path, nodes["feature"])
     assert "feature.txt" in isolated_app.git_files(imported_path, "refs/heads/feature")
+
+
+def test_import_git_bundle_chunked_upload_preserves_refs(isolated_app, tmp_path):
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "chunked-import", "")
+    bundle_path = tmp_path / "repo.bundle"
+    nodes = create_bundle_with_refs(bundle_path)
+
+    client = WsgiClient(isolated_app.app)
+    login_client(client, "alice")
+    client.get("/alice/chunked-import/settings")
+
+    response = post_bundle_import_chunks(client, "alice", "chunked-import", bundle_path, chunk_size=64)
+
+    assert response.status_code == 200
+    assert "Git bundle imported." in response.text
+    imported_path = isolated_app.repo_path("alice", "chunked-import")
+    assert isolated_app.repo_has_revision(imported_path, nodes["main"])
+    assert isolated_app.repo_has_revision(imported_path, nodes["feature"])
+
+
+def test_import_git_bundle_chunked_upload_returns_specific_import_error(isolated_app):
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "empty", "")
+
+    client = WsgiClient(isolated_app.app)
+    login_client(client, "alice")
+    client.get("/alice/empty/settings")
+
+    response = post_bundle_import_chunks(client, "alice", "empty", b"not a git bundle")
+
+    assert response.status_code == 400
+    assert response.text == "Uploaded file is not a valid Git bundle.\n"
+
+
+def test_import_git_bundle_final_chunk_retry_after_completed_import_returns_success(isolated_app):
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "already-imported", "")
+    commit_file(isolated_app.repo_path("alice", "already-imported"), "README.md", "# Imported\n")
+
+    client = WsgiClient(isolated_app.app)
+    login_client(client, "alice")
+    client.get("/alice/already-imported/settings")
+
+    response = post_bundle_import_chunk(
+        client,
+        "alice",
+        "already-imported",
+        b"final",
+        offset=100,
+        total=105,
+    )
+
+    assert response.status_code == 200
+    assert "Git bundle imported." in response.text
+    assert "Upload chunk offset mismatch." not in response.text
 
 
 def test_import_git_bundle_rejects_invalid_upload_without_replacing_repo(isolated_app):
