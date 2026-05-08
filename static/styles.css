@@ -277,7 +277,7 @@ button, .button {
 .filters .active, .tabs .active { color: var(--text); font-weight: 700; text-decoration: none; }
 .hero, .repo-tabs { margin-bottom: 1.5rem; }
 .eyebrow, .muted, .empty, .nav-user, .repo-card small, .issue-list span, .commit-list span, .file-list span, .clean-list span, .file-kind { color: var(--muted); }
-.repo-list, .stack, form, .clean-list, .commit-list, .file-list, .issue-list { display: grid; gap: .9rem; }
+.repo-list, .stack, form, .clean-list, .commit-list, .file-list, .issue-list { display: grid; gap: .75rem; }
 .repo-card { display: block; padding: .75rem 0; border-bottom: 1px solid var(--soft-border); color: var(--text); }
 .repo-card strong, .repo-card span, .repo-card small, .clone-box code { display: block; }
 .markdown-body { overflow-x: auto; }
