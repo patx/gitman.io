@@ -1,6 +1,7 @@
 import base64
 from contextlib import contextmanager
 import datetime as dt
+import fcntl
 import hashlib
 import hmac
 import html
@@ -71,6 +72,11 @@ MAX_IMPORT_BYTES = env_int("GITMAN_MAX_IMPORT_BYTES", 2 * 1024 * 1024 * 1024)
 IMPORT_UPLOAD_CHUNK_BYTES = 1024 * 1024
 IMPORT_UPLOAD_STALE_SECONDS = env_int("GITMAN_IMPORT_UPLOAD_STALE_SECONDS", 6 * 60 * 60, minimum=60)
 GIT_IMPORT_TIMEOUT_SECONDS = env_int("GITMAN_IMPORT_TIMEOUT_SECONDS", 3600, minimum=1)
+IMPORT_FINALIZING_STALE_SECONDS = env_int(
+    "GITMAN_IMPORT_FINALIZING_STALE_SECONDS",
+    GIT_IMPORT_TIMEOUT_SECONDS + 600,
+    minimum=60,
+)
 # Gunicorn reads these when app.py is used as its config file.
 timeout = env_int("GITMAN_GUNICORN_TIMEOUT_SECONDS", GIT_IMPORT_TIMEOUT_SECONDS + 300, minimum=1)
 graceful_timeout = timeout
@@ -281,6 +287,8 @@ class StreamingUpload:
 
 
 UPLOAD_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+IMPORT_STATUS_FINALIZING = "finalizing"
+IMPORT_FINALIZING_MESSAGE = "Finalizing import... You can check back in a few minutes."
 
 
 def validate_startup_config():
@@ -459,6 +467,14 @@ def init_db():
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS repo_imports (
+                repo_id INTEGER PRIMARY KEY REFERENCES repositories(id) ON DELETE CASCADE,
+                status TEXT NOT NULL,
+                upload_id TEXT NOT NULL DEFAULT '',
+                filename TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS auth_rate_limits (
                 rate_key TEXT PRIMARY KEY,
                 failure_count INTEGER NOT NULL,
@@ -486,6 +502,7 @@ def init_db():
         ensure_repository_pages_columns(conn)
         ensure_pull_request_ref_columns(conn)
         ensure_repo_metadata_table(conn)
+        ensure_repo_imports_table(conn)
         ensure_auth_rate_limits_table(conn)
 
 
@@ -550,6 +567,20 @@ def ensure_repo_metadata_table(conn):
             tag_refs_json TEXT NOT NULL DEFAULT '[]',
             status TEXT NOT NULL DEFAULT '',
             indexed_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def ensure_repo_imports_table(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS repo_imports (
+            repo_id INTEGER PRIMARY KEY REFERENCES repositories(id) ON DELETE CASCADE,
+            status TEXT NOT NULL,
+            upload_id TEXT NOT NULL DEFAULT '',
+            filename TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL
         )
         """
@@ -1732,6 +1763,97 @@ def import_upload_chunks_dir():
     return path
 
 
+def import_locks_dir():
+    path = Path(tempfile.gettempdir()) / "gitman-import-locks"
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return path
+
+
+@contextmanager
+def import_file_lock(lock_path):
+    lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    with os.fdopen(fd, "r+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def repo_import_lock(repo):
+    return import_file_lock(import_locks_dir() / f"repo-{repo['id']}.lock")
+
+
+def upload_chunk_lock(user, repo, upload_id):
+    return import_file_lock(import_locks_dir() / f"upload-{user['id']}-{repo['id']}-{upload_id}.lock")
+
+
+def repo_import_state(repo_id):
+    with db_connect() as conn:
+        return conn.execute(
+            "SELECT * FROM repo_imports WHERE repo_id = ?",
+            (repo_id,),
+        ).fetchone()
+
+
+def mark_repo_import_finalizing(repo_id, upload_id="", filename=""):
+    now = utcnow()
+    with db_connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO repo_imports (repo_id, status, upload_id, filename, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(repo_id) DO UPDATE SET
+                status = excluded.status,
+                upload_id = excluded.upload_id,
+                filename = excluded.filename,
+                updated_at = excluded.updated_at
+            """,
+            (
+                repo_id,
+                IMPORT_STATUS_FINALIZING,
+                (upload_id or "")[:80],
+                (filename or "")[:255],
+                now,
+            ),
+        )
+
+
+def clear_repo_import_status(repo_id, upload_id=None):
+    with db_connect() as conn:
+        if upload_id is None:
+            conn.execute("DELETE FROM repo_imports WHERE repo_id = ?", (repo_id,))
+        else:
+            conn.execute(
+                "DELETE FROM repo_imports WHERE repo_id = ? AND upload_id = ?",
+                (repo_id, upload_id),
+            )
+
+
+def repo_import_state_is_stale(state):
+    updated_at = parse_activity_time(state["updated_at"])
+    age = dt.datetime.now(dt.UTC) - updated_at
+    return age.total_seconds() > IMPORT_FINALIZING_STALE_SECONDS
+
+
+def repo_import_settings_state(repo, path):
+    state = repo_import_state(repo["id"])
+    if not state or state["status"] != IMPORT_STATUS_FINALIZING:
+        return {"finalizing": False, "message": ""}
+
+    try:
+        empty = repo_is_empty(path)
+    except (GitCommandError, OSError):
+        empty = True
+
+    if not empty or repo_import_state_is_stale(state):
+        clear_repo_import_status(repo["id"])
+        return {"finalizing": False, "message": ""}
+
+    return {"finalizing": True, "message": IMPORT_FINALIZING_MESSAGE}
+
+
 def cleanup_stale_upload_chunks(path):
     if not IMPORT_UPLOAD_STALE_SECONDS:
         return
@@ -1784,11 +1906,89 @@ def discard_upload_chunk(source, expected_size):
         remaining -= len(chunk)
 
 
-def import_complete_upload_chunk(repo, path, filename, chunk_path):
-    with chunk_path.open("rb") as bundle_file:
-        import_git_bundle(repo, path, StreamingUpload(filename, bundle_file))
-    updated_repo = get_repo(repo["owner_username"], repo["name"])
-    return render_repo_settings_page(updated_repo, path, notice="Git bundle imported.")
+def import_complete_upload_chunk(repo, path, filename, chunk_path, upload_id):
+    mark_repo_import_finalizing(repo["id"], upload_id, filename)
+    try:
+        with chunk_path.open("rb") as bundle_file:
+            import_git_bundle(
+                repo,
+                path,
+                StreamingUpload(filename, bundle_file),
+                import_upload_id=upload_id,
+                import_status_already_marked=True,
+            )
+        updated_repo = get_repo(repo["owner_username"], repo["name"])
+        return render_repo_settings_page(updated_repo, path, notice="Git bundle imported.")
+    finally:
+        clear_repo_import_status(repo["id"], upload_id)
+
+
+def process_import_bundle_chunk(repo, path, filename, chunk_path, owner, repo_name, total, offset, chunk_size, upload_id):
+    if offset == 0 and chunk_path.exists():
+        chunk_path.unlink()
+
+    current_size = chunk_path.stat().st_size if chunk_path.exists() else 0
+    if current_size != offset:
+        if current_size < offset:
+            discard_upload_chunk(request.environ["wsgi.input"], chunk_size)
+            if offset + chunk_size >= total and not repo_is_empty(path):
+                clear_repo_import_status(repo["id"], upload_id)
+                updated_repo = get_repo(owner, repo_name)
+                return render_repo_settings_page(updated_repo, path, notice="Git bundle imported.")
+            clear_repo_import_status(repo["id"], upload_id)
+            return HTTPResponse(
+                "Upload chunk offset mismatch.\n",
+                status=409,
+                content_type="text/plain; charset=utf-8",
+            )
+        if current_size >= offset + chunk_size:
+            discard_upload_chunk(request.environ["wsgi.input"], chunk_size)
+            if current_size >= total:
+                if not repo_is_empty(path):
+                    clear_repo_import_status(repo["id"], upload_id)
+                    updated_repo = get_repo(owner, repo_name)
+                    return render_repo_settings_page(updated_repo, path, notice="Git bundle imported.")
+                try:
+                    return import_complete_upload_chunk(repo, path, filename, chunk_path, upload_id)
+                except UploadTooLarge as exc:
+                    clear_repo_import_status(repo["id"], upload_id)
+                    abort(413, str(exc))
+                except (ValueError, GitCommandError) as exc:
+                    clear_repo_import_status(repo["id"], upload_id)
+                    return HTTPResponse(f"{exc}\n", status=400, content_type="text/plain; charset=utf-8")
+            return HTTPResponse("OK\n", content_type="text/plain; charset=utf-8")
+        try:
+            with chunk_path.open("r+b") as target:
+                target.truncate(offset)
+        except OSError:
+            clear_repo_import_status(repo["id"], upload_id)
+            return HTTPResponse(
+                "Upload chunk offset mismatch.\n",
+                status=409,
+                content_type="text/plain; charset=utf-8",
+            )
+
+    try:
+        save_upload_chunk(request.environ["wsgi.input"], chunk_path, chunk_size, offset)
+        current_size = chunk_path.stat().st_size
+        if current_size < total:
+            return HTTPResponse("OK\n", content_type="text/plain; charset=utf-8")
+        if current_size != total:
+            raise ValueError("Upload size mismatch.")
+
+        return import_complete_upload_chunk(repo, path, filename, chunk_path, upload_id)
+    except UploadTooLarge as exc:
+        clear_repo_import_status(repo["id"], upload_id)
+        abort(413, str(exc))
+    except (ValueError, GitCommandError) as exc:
+        clear_repo_import_status(repo["id"], upload_id)
+        return HTTPResponse(f"{exc}\n", status=400, content_type="text/plain; charset=utf-8")
+    finally:
+        try:
+            if chunk_path.exists() and chunk_path.stat().st_size >= total:
+                chunk_path.unlink()
+        except OSError:
+            pass
 
 
 def bundle_ref_names(bundle_path):
@@ -1822,7 +2022,7 @@ def fetch_bundle_refspecs(bundle_path, staging_path, refspecs):
         run_git_import(["fetch", str(bundle_path), *refspecs[index : index + 100]], cwd=staging_path)
 
 
-def import_git_bundle(repo, path, upload):
+def import_git_bundle(repo, path, upload, import_upload_id="", import_status_already_marked=False):
     if not path.exists():
         raise ValueError("Repository directory does not exist.")
     if not repo_is_empty(path):
@@ -1836,49 +2036,58 @@ def import_git_bundle(repo, path, upload):
     moved_target_to_backup = False
     installed_staging = False
     success = False
+    status_upload_id = import_upload_id or f"direct-{secrets.token_hex(8)}"
+    import_status_marked = import_status_already_marked
 
     try:
         with tempfile.NamedTemporaryFile(prefix="gitman-import-", suffix=".bundle", delete=False) as bundle_file:
             bundle_path = Path(bundle_file.name)
         save_bundle_upload(upload, bundle_path)
+        if not import_status_marked:
+            mark_repo_import_finalizing(repo["id"], status_upload_id, getattr(upload, "filename", ""))
+            import_status_marked = True
 
         verification = run_git_import(["bundle", "verify", str(bundle_path)], cwd=path, check=False)
         if verification.returncode != 0:
             raise ValueError("Uploaded file is not a valid Git bundle.")
 
-        staging_path = Path(tempfile.mkdtemp(prefix=f".{name}-import-", dir=path.parent))
-        shutil.rmtree(staging_path)
-        run_git_import(["init", "--bare", str(staging_path)])
-        run_git_import(
-            [
-                "fetch",
-                str(bundle_path),
-                "+refs/heads/*:refs/heads/*",
-                "+refs/tags/*:refs/tags/*",
-            ],
-            cwd=staging_path,
-        )
-        fetch_bundle_refspecs(bundle_path, staging_path, origin_branch_refspecs_for_bundle(bundle_path))
-        if not list_repo_branches(staging_path):
-            raise ValueError("Uploaded Git bundle does not contain any branches.")
-        default_code_ref(staging_path)
-        write_git_metadata(staging_path, owner, name, repo["description"])
+        with repo_import_lock(repo):
+            if not repo_is_empty(path):
+                raise ValueError("Git bundles can only be imported into empty repositories.")
 
-        if not repo_is_empty(path):
-            raise ValueError("Repository is no longer empty.")
+            staging_path = Path(tempfile.mkdtemp(prefix=f".{name}-import-", dir=path.parent))
+            shutil.rmtree(staging_path)
+            run_git_import(["init", "--bare", str(staging_path)])
+            run_git_import(
+                [
+                    "fetch",
+                    str(bundle_path),
+                    "+refs/heads/*:refs/heads/*",
+                    "+refs/tags/*:refs/tags/*",
+                ],
+                cwd=staging_path,
+            )
+            fetch_bundle_refspecs(bundle_path, staging_path, origin_branch_refspecs_for_bundle(bundle_path))
+            if not list_repo_branches(staging_path):
+                raise ValueError("Uploaded Git bundle does not contain any branches.")
+            default_code_ref(staging_path)
+            write_git_metadata(staging_path, owner, name, repo["description"])
 
-        backup_path = path.with_name(f".{name}-import-backup-{secrets.token_hex(8)}")
-        path.rename(backup_path)
-        moved_target_to_backup = True
-        staging_path.rename(path)
-        installed_staging = True
-        staging_path = None
+            if not repo_is_empty(path):
+                raise ValueError("Repository is no longer empty.")
 
-        with db_connect() as conn:
-            conn.execute("UPDATE repositories SET updated_at = ? WHERE id = ?", (utcnow(), repo["id"]))
-        mark_repo_indexing(repo["id"], path)
-        schedule_repo_metadata_refresh(repo["id"])
-        success = True
+            backup_path = path.with_name(f".{name}-import-backup-{secrets.token_hex(8)}")
+            path.rename(backup_path)
+            moved_target_to_backup = True
+            staging_path.rename(path)
+            installed_staging = True
+            staging_path = None
+
+            with db_connect() as conn:
+                conn.execute("UPDATE repositories SET updated_at = ? WHERE id = ?", (utcnow(), repo["id"]))
+            mark_repo_indexing(repo["id"], path)
+            schedule_repo_metadata_refresh(repo["id"])
+            success = True
     except Exception:
         if installed_staging and path.exists():
             shutil.rmtree(path)
@@ -1892,6 +2101,8 @@ def import_git_bundle(repo, path, upload):
             shutil.rmtree(staging_path)
         if success and backup_path and backup_path.exists():
             shutil.rmtree(backup_path)
+        if import_status_marked:
+            clear_repo_import_status(repo["id"], status_upload_id)
 
 
 def delete_repository(repo, path):
@@ -4316,12 +4527,15 @@ def fork_repo(owner, repo_name):
 
 
 def render_repo_settings_page(repo, path, contributor_username="", error=None, notice=None):
+    import_bundle_state = repo_import_settings_state(repo, path)
     return render(
         "repo_settings.tpl",
         repo=repo,
         contributors=list_repo_contributors(repo["id"]),
         contributor_username=contributor_username,
         pages_settings=pages_settings_context(repo),
+        import_bundle_finalizing=import_bundle_state["finalizing"],
+        import_bundle_status_message=import_bundle_state["message"],
         error=error,
         notice=notice,
         **repo_page_context(repo, path),
@@ -4382,63 +4596,19 @@ def repo_settings_import_bundle_chunk(owner, repo_name):
 
     chunks_dir = import_upload_chunks_dir()
     chunk_path = chunks_dir / f"{user['id']}-{repo['id']}-{upload_id}.bundle"
-    if offset == 0 and chunk_path.exists():
-        chunk_path.unlink()
-
-    current_size = chunk_path.stat().st_size if chunk_path.exists() else 0
-    if current_size != offset:
-        if current_size < offset:
-            discard_upload_chunk(request.environ["wsgi.input"], chunk_size)
-            if offset + chunk_size >= total and not repo_is_empty(path):
-                updated_repo = get_repo(owner, repo_name)
-                return render_repo_settings_page(updated_repo, path, notice="Git bundle imported.")
-            return HTTPResponse(
-                "Upload chunk offset mismatch.\n",
-                status=409,
-                content_type="text/plain; charset=utf-8",
-            )
-        if current_size >= offset + chunk_size:
-            discard_upload_chunk(request.environ["wsgi.input"], chunk_size)
-            if current_size >= total:
-                if not repo_is_empty(path):
-                    updated_repo = get_repo(owner, repo_name)
-                    return render_repo_settings_page(updated_repo, path, notice="Git bundle imported.")
-                try:
-                    return import_complete_upload_chunk(repo, path, filename, chunk_path)
-                except UploadTooLarge as exc:
-                    abort(413, str(exc))
-                except (ValueError, GitCommandError) as exc:
-                    return HTTPResponse(f"{exc}\n", status=400, content_type="text/plain; charset=utf-8")
-            return HTTPResponse("OK\n", content_type="text/plain; charset=utf-8")
-        try:
-            with chunk_path.open("r+b") as target:
-                target.truncate(offset)
-        except OSError:
-            return HTTPResponse(
-                "Upload chunk offset mismatch.\n",
-                status=409,
-                content_type="text/plain; charset=utf-8",
-            )
-
-    try:
-        save_upload_chunk(request.environ["wsgi.input"], chunk_path, chunk_size, offset)
-        current_size = chunk_path.stat().st_size
-        if current_size < total:
-            return HTTPResponse("OK\n", content_type="text/plain; charset=utf-8")
-        if current_size != total:
-            raise ValueError("Upload size mismatch.")
-
-        return import_complete_upload_chunk(repo, path, filename, chunk_path)
-    except UploadTooLarge as exc:
-        abort(413, str(exc))
-    except (ValueError, GitCommandError) as exc:
-        return HTTPResponse(f"{exc}\n", status=400, content_type="text/plain; charset=utf-8")
-    finally:
-        try:
-            if chunk_path.exists() and chunk_path.stat().st_size >= total:
-                chunk_path.unlink()
-        except OSError:
-            pass
+    with upload_chunk_lock(user, repo, upload_id):
+        return process_import_bundle_chunk(
+            repo,
+            path,
+            filename,
+            chunk_path,
+            owner,
+            repo_name,
+            total,
+            offset,
+            chunk_size,
+            upload_id,
+        )
 
 
 @app.route("/<owner>/<repo_name>/settings", method=["GET", "POST"])

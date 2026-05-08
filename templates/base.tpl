@@ -419,11 +419,34 @@
         }
       };
 
+      const uploadChunk = (url, body, csrfToken, onProgress, onUploadComplete) => {
+        return new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", url);
+          xhr.setRequestHeader("Content-Type", "application/octet-stream");
+          xhr.setRequestHeader("X-CSRF-Token", csrfToken);
+          xhr.upload.addEventListener("progress", (progressEvent) => {
+            if (progressEvent.lengthComputable) onProgress(progressEvent.loaded);
+          });
+          xhr.upload.addEventListener("load", onUploadComplete);
+          xhr.addEventListener("load", () => {
+            resolve({
+              ok: xhr.status >= 200 && xhr.status < 300,
+              status: xhr.status,
+              text: async () => xhr.responseText || "",
+            });
+          });
+          xhr.addEventListener("error", () => reject(new Error("Upload failed. Check your connection and try again.")));
+          xhr.addEventListener("abort", () => reject(new Error("Upload canceled.")));
+          xhr.send(body);
+        });
+      };
+
       forms.forEach((form) => {
         form.addEventListener("submit", async (event) => {
           const input = form.querySelector("[data-import-bundle-file]");
           const file = input && input.files ? input.files[0] : null;
-          if (!file || !window.fetch) return;
+          if (!file || !window.XMLHttpRequest) return;
 
           event.preventDefault();
 
@@ -434,27 +457,35 @@
           url.searchParams.set("filename", file.name || "repo.bundle");
           if (file.size <= 0) return;
 
-          if (status) {
-            status.className = "muted";
-            status.textContent = "Uploading Git bundle...";
+          const setStatus = (message, className = "muted") => {
+            if (!status) return;
+            status.className = className;
+            status.textContent = message;
             status.hidden = false;
-          }
+          };
+          const setUploadStatus = (loadedBytes) => {
+            const percentage = Math.min(100, Math.floor((loadedBytes / file.size) * 100));
+            setStatus(`Uploading Git bundle... ${percentage}% - Do not leave this page.`);
+          };
+
+          setUploadStatus(0);
           if (button) {
             button.dataset.originalLabel = button.textContent;
             button.disabled = true;
-            button.textContent = "Importing...";
+            button.hidden = true;
           }
 
           try {
             const chunkSize = 4 * 1024 * 1024;
             const uploadId = (
-              crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
+              window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random()}`
             ).replace(/[^A-Za-z0-9._-]/g, "");
             let offset = 0;
             let finalResponse = null;
 
             while (offset < file.size) {
               const end = Math.min(offset + chunkSize, file.size);
+              const isFinalChunk = end >= file.size;
               url.searchParams.set("upload_id", uploadId);
               url.searchParams.set("offset", String(offset));
               url.searchParams.set("total", String(file.size));
@@ -464,14 +495,19 @@
               for (let attempt = 1; attempt <= 8; attempt += 1) {
                 try {
                   url.searchParams.set("retry", String(attempt));
-                  response = await fetch(url.toString(), {
-                    method: "POST",
-                    headers: {
-                      "Content-Type": "application/octet-stream",
-                      "X-CSRF-Token": csrf ? csrf.value : "",
-                    },
-                    body: file.slice(offset, end),
-                  });
+                  response = await uploadChunk(
+                    url.toString(),
+                    file.slice(offset, end),
+                    csrf ? csrf.value : "",
+                    (loadedBytes) => setUploadStatus(offset + loadedBytes),
+                    () => {
+                      if (isFinalChunk) {
+                        setStatus("Finalizing import... You can check back in a few minutes.");
+                      } else {
+                        setUploadStatus(end);
+                      }
+                    }
+                  );
                   if (response.ok) break;
                   lastError = new Error(
                     await responseMessage(response, "Upload failed.")
@@ -481,7 +517,7 @@
                   lastError = error;
                 }
                 if (attempt < 8) {
-                  if (status) status.textContent = `Retrying upload chunk... ${attempt}/7`;
+                  setStatus(`Uploading Git bundle... ${Math.floor((offset / file.size) * 100)}% - Do not leave this page. Retrying chunk ${attempt}/7...`);
                   await new Promise((resolve) => setTimeout(resolve, Math.min(attempt * 2000, 15000)));
                 }
               }
@@ -489,27 +525,23 @@
 
               offset = end;
               if (offset < file.size) {
-                if (status) {
-                  status.textContent = `Uploading Git bundle... ${Math.floor((offset / file.size) * 100)}%`;
-                }
+                setUploadStatus(offset);
               } else {
                 finalResponse = response;
               }
             }
 
-            if (status) status.textContent = "Importing Git bundle...";
             replaceDocument(await finalResponse.text());
           } catch (error) {
-            if (status) {
-              status.className = "alert";
-              status.textContent =
-                error && error.message
-                  ? error.message
-                  : "Upload failed. Check your connection and try again.";
-              status.hidden = false;
-            }
+            setStatus(
+              error && error.message
+                ? error.message
+                : "Upload failed. Check your connection and try again.",
+              "alert"
+            );
             if (button) {
               button.disabled = false;
+              button.hidden = false;
               button.textContent = button.dataset.originalLabel || "Import bundle";
             }
           }

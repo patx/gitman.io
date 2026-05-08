@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit, unquote
 
@@ -740,6 +742,7 @@ def test_init_db_creates_expected_tables_and_is_idempotent(isolated_app):
         "pull_requests",
         "repo_stars",
         "custom_domains",
+        "repo_imports",
         "auth_rate_limits",
     }.issubset(tables)
     assert {"display_name", "bio", "website"}.issubset(user_columns)
@@ -1031,6 +1034,7 @@ def test_import_git_bundle_chunked_upload_preserves_refs(isolated_app, tmp_path)
 def test_import_git_bundle_chunked_upload_returns_specific_import_error(isolated_app):
     owner = create_user("alice")
     isolated_app.create_repository(owner, "empty", "")
+    repo = isolated_app.get_repo("alice", "empty")
 
     client = WsgiClient(isolated_app.app)
     login_client(client, "alice")
@@ -1040,6 +1044,93 @@ def test_import_git_bundle_chunked_upload_returns_specific_import_error(isolated
 
     assert response.status_code == 400
     assert response.text == "Uploaded file is not a valid Git bundle.\n"
+    assert isolated_app.repo_import_state(repo["id"]) is None
+
+
+def test_import_git_bundle_finalizing_state_hides_import_button(isolated_app):
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "empty", "")
+    repo = isolated_app.get_repo("alice", "empty")
+    isolated_app.mark_repo_import_finalizing(repo["id"], "test-upload", "repo.bundle")
+
+    client = WsgiClient(isolated_app.app)
+    login_client(client, "alice")
+    response = client.get("/alice/empty/settings")
+
+    assert response.status_code == 200
+    assert "Finalizing import... You can check back in a few minutes." in response.text
+    assert 'name="bundle"' not in response.text
+    assert ">Import bundle</button>" not in response.text
+    assert isolated_app.repo_import_state(repo["id"]) is not None
+
+
+def test_import_git_bundle_final_chunk_marks_and_clears_finalizing_state(isolated_app, monkeypatch):
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "empty", "")
+    repo = isolated_app.get_repo("alice", "empty")
+    seen_state = {}
+
+    def fake_import_git_bundle(repo_arg, path_arg, upload, import_upload_id="", import_status_already_marked=False):
+        state = isolated_app.repo_import_state(repo_arg["id"])
+        seen_state["status"] = state["status"] if state else ""
+        seen_state["upload_id"] = state["upload_id"] if state else ""
+        seen_state["already_marked"] = import_status_already_marked
+        seen_state["import_upload_id"] = import_upload_id
+        raise ValueError("import failed")
+
+    monkeypatch.setattr(isolated_app, "import_git_bundle", fake_import_git_bundle)
+
+    client = WsgiClient(isolated_app.app)
+    login_client(client, "alice")
+    client.get("/alice/empty/settings")
+
+    response = post_bundle_import_chunk(
+        client,
+        "alice",
+        "empty",
+        b"abc",
+        offset=0,
+        total=3,
+        upload_id="test-upload",
+    )
+
+    assert response.status_code == 400
+    assert response.text == "import failed\n"
+    assert seen_state == {
+        "status": isolated_app.IMPORT_STATUS_FINALIZING,
+        "upload_id": "test-upload",
+        "already_marked": True,
+        "import_upload_id": "test-upload",
+    }
+    assert isolated_app.repo_import_state(repo["id"]) is None
+
+
+def test_import_git_bundle_incomplete_chunk_clears_finalizing_state(isolated_app):
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "empty", "")
+    repo = isolated_app.get_repo("alice", "empty")
+    isolated_app.mark_repo_import_finalizing(repo["id"], "test-upload", "repo.bundle")
+
+    client = WsgiClient(isolated_app.app)
+    login_client(client, "alice")
+    client.get("/alice/empty/settings")
+
+    response = post_bundle_import_chunk(
+        client,
+        "alice",
+        "empty",
+        b"abc",
+        offset=5,
+        total=10,
+        upload_id="test-upload",
+    )
+    settings_response = client.get("/alice/empty/settings")
+
+    assert response.status_code == 409
+    assert response.text == "Upload chunk offset mismatch.\n"
+    assert isolated_app.repo_import_state(repo["id"]) is None
+    assert 'name="bundle"' in settings_response.text
+    assert ">Import bundle</button>" in settings_response.text
 
 
 def test_import_git_bundle_final_chunk_retry_after_completed_import_returns_success(isolated_app):
@@ -1063,6 +1154,95 @@ def test_import_git_bundle_final_chunk_retry_after_completed_import_returns_succ
     assert response.status_code == 200
     assert "Git bundle imported." in response.text
     assert "Upload chunk offset mismatch." not in response.text
+
+
+def test_import_git_bundle_rechecks_empty_repo_before_fetch(isolated_app, monkeypatch):
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "empty", "")
+    repo = isolated_app.get_repo("alice", "empty")
+    path = isolated_app.repo_path("alice", "empty")
+    checked_empty = iter([True, False])
+    calls = []
+
+    def fake_repo_is_empty(repo_path):
+        assert repo_path == path
+        return next(checked_empty)
+
+    def fake_run_git_import(args, cwd=None, check=True):
+        calls.append(args)
+        if args[:2] == ["bundle", "verify"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        raise AssertionError(f"unexpected import git call: {args}")
+
+    monkeypatch.setattr(isolated_app, "repo_is_empty", fake_repo_is_empty)
+    monkeypatch.setattr(isolated_app, "run_git_import", fake_run_git_import)
+
+    with pytest.raises(ValueError, match="empty repositories"):
+        isolated_app.import_git_bundle(repo, path, gitman.StreamingUpload("repo.bundle", BytesIO(b"bundle")))
+
+    assert calls
+    assert calls[0][:2] == ["bundle", "verify"]
+    assert all(call[0] != "fetch" for call in calls)
+
+
+def test_import_bundle_chunk_requests_for_same_upload_do_not_overlap(isolated_app, tmp_path, monkeypatch):
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "chunked", "")
+    repo = isolated_app.get_repo("alice", "chunked")
+    temp_root = tmp_path / "tmp"
+    active_saves = 0
+    overlap = threading.Event()
+    save_lock = threading.Lock()
+    original_save_upload_chunk = isolated_app.save_upload_chunk
+
+    def slow_save_upload_chunk(*args, **kwargs):
+        nonlocal active_saves
+        with save_lock:
+            active_saves += 1
+            if active_saves > 1:
+                overlap.set()
+        try:
+            time.sleep(0.05)
+            return original_save_upload_chunk(*args, **kwargs)
+        finally:
+            with save_lock:
+                active_saves -= 1
+
+    monkeypatch.setattr(gitman.tempfile, "gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(isolated_app, "save_upload_chunk", slow_save_upload_chunk)
+
+    clients = [WsgiClient(isolated_app.app), WsgiClient(isolated_app.app)]
+    for client in clients:
+        login_client(client, "alice")
+        client.get("/alice/chunked/settings")
+
+    responses = []
+    threads = [
+        threading.Thread(
+            target=lambda current_client=client: responses.append(
+                post_bundle_import_chunk(
+                    current_client,
+                    "alice",
+                    "chunked",
+                    b"abc",
+                    offset=0,
+                    total=6,
+                    upload_id="same-upload",
+                )
+            )
+        )
+        for client in clients
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert len(responses) == 2
+    assert {response.status_code for response in responses} == {200}
+    assert not overlap.is_set()
+    chunk_path = temp_root / "gitman-import-chunks" / f"{owner['id']}-{repo['id']}-same-upload.bundle"
+    assert chunk_path.read_bytes() == b"abc"
 
 
 def test_import_git_bundle_rejects_invalid_upload_without_replacing_repo(isolated_app):
