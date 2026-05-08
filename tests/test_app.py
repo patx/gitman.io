@@ -195,7 +195,6 @@ def login_client(client, username, password="correct horse battery staple", next
 def isolated_app(tmp_path, monkeypatch):
     monkeypatch.setattr(gitman, "DB_PATH", tmp_path / "gitman.sqlite3")
     monkeypatch.setattr(gitman, "REPO_ROOT", tmp_path / "repos")
-    gitman.AUTH_FAILURES.clear()
     gitman.init_db()
     return gitman
 
@@ -549,6 +548,42 @@ def test_index_public_repo_search_finds_repositories_by_fuzzy_name(isolated_app)
     assert json.loads(empty_response.text)["results"] == []
 
 
+def test_public_repo_search_uses_bounded_candidate_set(isolated_app, monkeypatch):
+    monkeypatch.setattr(gitman, "REPO_SEARCH_CANDIDATE_LIMIT", 1)
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "needle", "")
+    isolated_app.create_repository(owner, "newer", "")
+    with isolated_app.db_connect() as conn:
+        conn.execute("UPDATE repositories SET updated_at = ? WHERE name = ?", ("2020-01-01T00:00:00Z", "needle"))
+        conn.execute("UPDATE repositories SET updated_at = ? WHERE name = ?", ("2030-01-01T00:00:00Z", "newer"))
+
+    assert isolated_app.search_public_repos("needle", limit=1) == []
+
+    monkeypatch.setattr(gitman, "REPO_SEARCH_CANDIDATE_LIMIT", 2)
+    assert [result["full_name"] for result in isolated_app.search_public_repos("needle", limit=1)] == ["alice/needle"]
+
+
+def test_commit_activity_scans_bounded_repo_set(isolated_app, monkeypatch):
+    monkeypatch.setattr(gitman, "ACTIVITY_REPO_SCAN_LIMIT", 1)
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "old", "")
+    isolated_app.create_repository(owner, "new", "")
+    with isolated_app.db_connect() as conn:
+        conn.execute("UPDATE repositories SET created_at = ? WHERE name = ?", ("2020-01-01T00:00:00Z", "old"))
+        conn.execute("UPDATE repositories SET created_at = ? WHERE name = ?", ("2030-01-01T00:00:00Z", "new"))
+
+    scanned = []
+
+    def fake_commit_log(path, limit):
+        scanned.append(path.name)
+        return []
+
+    monkeypatch.setattr(gitman, "commit_log", fake_commit_log)
+
+    assert isolated_app.list_commit_activity_actions(50) == []
+    assert scanned == ["new"]
+
+
 def test_csrf_required_for_browser_posts_and_git_is_exempt(isolated_app):
     owner = create_user("alice", password="owner-password")
     isolated_app.create_repository(owner, "demo", "")
@@ -595,7 +630,6 @@ def test_login_and_git_auth_failures_are_rate_limited(isolated_app, monkeypatch)
     assert response.status_code == 429
     assert response.header("Retry-After") == "60"
 
-    gitman.AUTH_FAILURES.clear()
     owner = gitman.get_user_by_username("alice")
     isolated_app.create_repository(owner, "demo", "")
     for _ in range(2):
@@ -699,10 +733,109 @@ def test_init_db_creates_expected_tables_and_is_idempotent(isolated_app):
         repo_columns = {row["name"] for row in conn.execute("PRAGMA table_info(repositories)")}
         pr_columns = {row["name"] for row in conn.execute("PRAGMA table_info(pull_requests)")}
 
-    assert {"users", "repositories", "issues", "pull_requests", "repo_stars", "custom_domains"}.issubset(tables)
+    assert {
+        "users",
+        "repositories",
+        "issues",
+        "pull_requests",
+        "repo_stars",
+        "custom_domains",
+        "auth_rate_limits",
+    }.issubset(tables)
     assert {"display_name", "bio", "website"}.issubset(user_columns)
     assert {"forked_from_repo_id", "forked_at", "forked_from_node", "pages_docs_enabled"}.issubset(repo_columns)
     assert {"target_ref_type", "target_ref_name", "source_ref_type", "source_ref_name"}.issubset(pr_columns)
+
+
+def test_auth_rate_limit_failures_are_shared_between_workers(isolated_app, monkeypatch):
+    monkeypatch.setattr(gitman, "RATE_LIMIT_MAX_FAILURES", 2)
+    monkeypatch.setattr(gitman, "RATE_LIMIT_COOLDOWN_SECONDS", 60)
+    repo_root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(repo_root) if not existing_pythonpath else f"{repo_root}{os.pathsep}{existing_pythonpath}"
+
+    worker_script = """
+import os
+import sys
+
+os.environ["GITMAN_DB"] = sys.argv[1]
+os.environ["GITMAN_REPO_ROOT"] = sys.argv[2]
+os.environ["SECRET_KEY"] = "test-secret"
+
+import app as gitman
+
+gitman.RATE_LIMIT_MAX_FAILURES = int(sys.argv[3])
+gitman.record_auth_failure("login", "alice", remote_addr="127.0.0.1")
+"""
+
+    processes = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                worker_script,
+                str(isolated_app.DB_PATH),
+                str(isolated_app.REPO_ROOT),
+                str(gitman.RATE_LIMIT_MAX_FAILURES),
+            ],
+            cwd=repo_root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(2)
+    ]
+
+    results = []
+    try:
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=15)
+            results.append((process.returncode, stdout, stderr))
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+
+    for returncode, stdout, stderr in results:
+        assert returncode == 0, stdout + stderr
+
+    assert gitman.rate_limit_blocked("login", "alice", remote_addr="127.0.0.1")
+
+
+def test_auth_rate_limit_cleanup_is_bounded(isolated_app, monkeypatch):
+    monkeypatch.setattr(gitman, "AUTH_RATE_LIMIT_PRUNE_BATCH_SIZE", 2)
+    active_until = 10**12
+    with isolated_app.db_connect() as conn:
+        for index in range(3):
+            conn.execute(
+                """
+                INSERT INTO auth_rate_limits (rate_key, failure_count, reset_at, blocked_until)
+                VALUES (?, ?, ?, ?)
+                """,
+                (f"expired:{index}", 1, 1, 1),
+            )
+        conn.execute(
+            """
+                INSERT INTO auth_rate_limits (rate_key, failure_count, reset_at, blocked_until)
+                VALUES (?, ?, ?, ?)
+                """,
+            ("active", 1, active_until, active_until),
+        )
+
+    gitman.record_auth_failure("login", "alice", remote_addr="127.0.0.1")
+
+    with isolated_app.db_connect() as conn:
+        expired_count = conn.execute(
+            "SELECT COUNT(*) FROM auth_rate_limits WHERE rate_key LIKE 'expired:%'"
+        ).fetchone()[0]
+        active_count = conn.execute(
+            "SELECT COUNT(*) FROM auth_rate_limits WHERE rate_key = 'active'"
+        ).fetchone()[0]
+
+    assert expired_count == 1
+    assert active_count == 1
 
 
 def test_db_connect_configures_sqlite_for_worker_contention(isolated_app):

@@ -84,6 +84,8 @@ PERF_LOG_THRESHOLD_MS = env_int("GITMAN_PERF_LOG_THRESHOLD_MS", 250, minimum=0)
 REF_PICKER_LIMIT = env_int("GITMAN_REF_PICKER_LIMIT", 25, minimum=1)
 REF_LIST_LIMIT = env_int("GITMAN_REF_LIST_LIMIT", 200, minimum=1)
 REF_SEARCH_COMMIT_LIMIT = env_int("GITMAN_REF_SEARCH_COMMIT_LIMIT", 100, minimum=1)
+REPO_SEARCH_CANDIDATE_LIMIT = env_int("GITMAN_REPO_SEARCH_CANDIDATE_LIMIT", 1000, minimum=25)
+ACTIVITY_REPO_SCAN_LIMIT = env_int("GITMAN_ACTIVITY_REPO_SCAN_LIMIT", 100, minimum=1)
 GIT_BINARY = os.environ.get("GITMAN_GIT_BINARY", "git")
 PAGES_DOMAIN = os.environ.get("GITMAN_PAGES_DOMAIN", "gitman.io").strip().lower().rstrip(".")
 DEFAULT_EXEC_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -91,6 +93,7 @@ RATE_LIMIT_ENABLED = env_bool("GITMAN_RATE_LIMIT_ENABLED", True)
 RATE_LIMIT_MAX_FAILURES = env_int("GITMAN_RATE_LIMIT_MAX_FAILURES", 5, minimum=1)
 RATE_LIMIT_WINDOW_SECONDS = env_int("GITMAN_RATE_LIMIT_WINDOW_SECONDS", 300, minimum=1)
 RATE_LIMIT_COOLDOWN_SECONDS = env_int("GITMAN_RATE_LIMIT_COOLDOWN_SECONDS", 300, minimum=1)
+AUTH_RATE_LIMIT_PRUNE_BATCH_SIZE = env_int("GITMAN_AUTH_RATE_LIMIT_PRUNE_BATCH_SIZE", 1000, minimum=1)
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,62}$")
 HOSTNAME_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REV_RE = re.compile(r"^(null|[0-9a-fA-F]{1,40})$")
@@ -222,7 +225,6 @@ CSP_HEADER = (
     "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
     "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com"
 )
-AUTH_FAILURES = {}
 REPO_INDEX_THREADS = set()
 REPO_INDEX_LOCK = threading.Lock()
 
@@ -457,6 +459,13 @@ def init_db():
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS auth_rate_limits (
+                rate_key TEXT PRIMARY KEY,
+                failure_count INTEGER NOT NULL,
+                reset_at REAL NOT NULL,
+                blocked_until REAL NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_repositories_owner ON repositories(owner_id);
             CREATE INDEX IF NOT EXISTS idx_issues_repo_number ON issues(repo_id, number);
             CREATE INDEX IF NOT EXISTS idx_issues_repo_status ON issues(repo_id, status);
@@ -469,6 +478,7 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_commit_comments_commit ON commit_comments(repo_id, commit_node);
             CREATE INDEX IF NOT EXISTS idx_custom_domains_domain ON custom_domains(domain);
             CREATE INDEX IF NOT EXISTS idx_custom_domains_user ON custom_domains(user_id);
+            CREATE INDEX IF NOT EXISTS idx_auth_rate_limits_expiry ON auth_rate_limits(reset_at, blocked_until);
             """
         )
         ensure_user_profile_columns(conn)
@@ -476,6 +486,7 @@ def init_db():
         ensure_repository_pages_columns(conn)
         ensure_pull_request_ref_columns(conn)
         ensure_repo_metadata_table(conn)
+        ensure_auth_rate_limits_table(conn)
 
 
 def ensure_user_profile_columns(conn):
@@ -542,6 +553,22 @@ def ensure_repo_metadata_table(conn):
             updated_at TEXT NOT NULL
         )
         """
+    )
+
+
+def ensure_auth_rate_limits_table(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_rate_limits (
+            rate_key TEXT PRIMARY KEY,
+            failure_count INTEGER NOT NULL,
+            reset_at REAL NOT NULL,
+            blocked_until REAL NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_auth_rate_limits_expiry ON auth_rate_limits(reset_at, blocked_until)"
     )
 
 
@@ -696,45 +723,94 @@ def browser_post_size_limit():
     return MAX_FORM_BYTES
 
 
-def auth_rate_key(kind, identifier=""):
+def auth_rate_key(kind, identifier="", remote_addr=None):
     identifier = (identifier or "").strip().lower()[:100]
-    remote_addr = request.environ.get("REMOTE_ADDR", "")
+    if remote_addr is None:
+        remote_addr = request.environ.get("REMOTE_ADDR", "")
     return f"{kind}:{remote_addr}:{identifier}"
 
 
-def rate_limit_blocked(kind, identifier=""):
+def rate_limit_blocked(kind, identifier="", remote_addr=None):
     if not RATE_LIMIT_ENABLED:
         return False
     now = time.time()
-    prune_auth_failures(now)
-    record = AUTH_FAILURES.get(auth_rate_key(kind, identifier))
-    return bool(record and record.get("blocked_until", 0) > now)
+    key = auth_rate_key(kind, identifier, remote_addr=remote_addr)
+    with db_connect() as conn:
+        record = conn.execute(
+            "SELECT blocked_until FROM auth_rate_limits WHERE rate_key = ?",
+            (key,),
+        ).fetchone()
+    return bool(record and record["blocked_until"] > now)
 
 
-def prune_auth_failures(now=None):
+def prune_auth_failures(now=None, conn=None, limit=None):
     now = now or time.time()
-    for key, record in list(AUTH_FAILURES.items()):
-        if record.get("reset_at", 0) <= now and record.get("blocked_until", 0) <= now:
-            AUTH_FAILURES.pop(key, None)
+    limit = limit or AUTH_RATE_LIMIT_PRUNE_BATCH_SIZE
+    if conn is None:
+        with db_connect() as conn:
+            prune_auth_failures(now, conn=conn, limit=limit)
+        return
+    conn.execute(
+        """
+        DELETE FROM auth_rate_limits
+        WHERE rowid IN (
+            SELECT rowid
+            FROM auth_rate_limits
+            WHERE reset_at <= ? AND blocked_until <= ?
+            ORDER BY reset_at
+            LIMIT ?
+        )
+        """,
+        (now, now, limit),
+    )
 
 
-def record_auth_failure(kind, identifier=""):
+def record_auth_failure(kind, identifier="", remote_addr=None):
     if not RATE_LIMIT_ENABLED:
         return
     now = time.time()
-    prune_auth_failures(now)
-    key = auth_rate_key(kind, identifier)
-    record = AUTH_FAILURES.get(key)
-    if not record or record.get("reset_at", 0) <= now:
-        record = {"count": 0, "reset_at": now + RATE_LIMIT_WINDOW_SECONDS, "blocked_until": 0}
-    record["count"] += 1
-    if record["count"] >= RATE_LIMIT_MAX_FAILURES:
-        record["blocked_until"] = now + RATE_LIMIT_COOLDOWN_SECONDS
-    AUTH_FAILURES[key] = record
+    key = auth_rate_key(kind, identifier, remote_addr=remote_addr)
+    with db_connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        prune_auth_failures(now, conn=conn)
+        record = conn.execute(
+            """
+            SELECT failure_count, reset_at, blocked_until
+            FROM auth_rate_limits
+            WHERE rate_key = ?
+            """,
+            (key,),
+        ).fetchone()
+        if not record or record["reset_at"] <= now:
+            failure_count = 0
+            reset_at = now + RATE_LIMIT_WINDOW_SECONDS
+            blocked_until = 0
+        else:
+            failure_count = record["failure_count"]
+            reset_at = record["reset_at"]
+            blocked_until = record["blocked_until"]
+        failure_count += 1
+        if failure_count >= RATE_LIMIT_MAX_FAILURES:
+            blocked_until = now + RATE_LIMIT_COOLDOWN_SECONDS
+        conn.execute(
+            """
+            INSERT INTO auth_rate_limits (rate_key, failure_count, reset_at, blocked_until)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(rate_key) DO UPDATE SET
+                failure_count = excluded.failure_count,
+                reset_at = excluded.reset_at,
+                blocked_until = excluded.blocked_until
+            """,
+            (key, failure_count, reset_at, blocked_until),
+        )
 
 
-def clear_auth_failures(kind, identifier=""):
-    AUTH_FAILURES.pop(auth_rate_key(kind, identifier), None)
+def clear_auth_failures(kind, identifier="", remote_addr=None):
+    with db_connect() as conn:
+        conn.execute(
+            "DELETE FROM auth_rate_limits WHERE rate_key = ?",
+            (auth_rate_key(kind, identifier, remote_addr=remote_addr),),
+        )
 
 
 def too_many_requests_response():
@@ -945,6 +1021,7 @@ def search_public_repos(query, limit=10):
     query = (query or "").strip()[:100]
     if not query:
         return []
+    result_limit = max(1, min(int(limit), 25))
 
     with db_connect() as conn:
         repos = conn.execute(
@@ -960,7 +1037,9 @@ def search_public_repos(query, limit=10):
             FROM repositories
             JOIN users ON users.id = repositories.owner_id
             ORDER BY repositories.updated_at DESC
-            """
+            LIMIT ?
+            """,
+            (max(REPO_SEARCH_CANDIDATE_LIMIT, result_limit),),
         ).fetchall()
 
     matches = []
@@ -969,7 +1048,7 @@ def search_public_repos(query, limit=10):
         if score is not None:
             matches.append((score, repo))
     matches.sort(key=lambda match: (match[0], match[1]["name"], match[1]["owner_username"]))
-    return [repo_search_result(repo) for _, repo in matches[: max(1, min(int(limit), 25))]]
+    return [repo_search_result(repo) for _, repo in matches[:result_limit]]
 
 
 def text_preview(value, limit=180):
@@ -1019,7 +1098,8 @@ def normalize_activity_action(row):
     return action
 
 
-def list_activity_repositories():
+def list_activity_repositories(limit=ACTIVITY_REPO_SCAN_LIMIT):
+    limit = max(1, min(int(limit), ACTIVITY_REPO_SCAN_LIMIT))
     with db_connect() as conn:
         return conn.execute(
             """
@@ -1027,7 +1107,9 @@ def list_activity_repositories():
             FROM repositories
             JOIN users ON users.id = repositories.owner_id
             ORDER BY repositories.created_at DESC
-            """
+            LIMIT ?
+            """,
+            (limit,),
         ).fetchall()
 
 

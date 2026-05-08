@@ -43,8 +43,13 @@ Pages-style static hosting is driven by the Git repository contents. A user site
 - `GITMAN_GUNICORN_TIMEOUT_SECONDS`: Gunicorn worker timeout, default `GITMAN_IMPORT_TIMEOUT_SECONDS + 300`
 - `GITMAN_MAX_RENDER_BYTES`: maximum file preview size, default `262144`
 - `GITMAN_MAX_GIT_RESPONSE_BYTES`: maximum Git HTTP backend response size, default `268435456`
+- `GITMAN_REPO_SEARCH_CANDIDATE_LIMIT`: maximum repositories loaded for fuzzy search scoring, default `1000`
+- `GITMAN_ACTIVITY_REPO_SCAN_LIMIT`: maximum repositories scanned for commit activity, default `100`
 - `GITMAN_RATE_LIMIT_ENABLED`: set to `0` to disable login, signup, and Git push auth rate limiting
+- `GITMAN_AUTH_RATE_LIMIT_PRUNE_BATCH_SIZE`: maximum expired rate-limit rows deleted during one cleanup, default `1000`
 - `PORT`: HTTP port, default `8080`
+
+Rate-limit counters are stored in the configured SQLite database, so failed-attempt tracking is shared across worker processes.
 
 When `GITMAN_DEBUG` is off, `SECRET_KEY` must be set to a non-default value before startup.
 
