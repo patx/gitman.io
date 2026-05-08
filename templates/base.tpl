@@ -452,6 +452,7 @@
 
           const status = form.querySelector("[data-import-bundle-status]");
           const button = form.querySelector("button[type='submit']");
+          const fileControl = input ? input.closest("label") || input : null;
           const csrf = form.querySelector('input[name="_csrf_token"]');
           const url = new URL(form.dataset.uploadUrl, window.location.origin);
           url.searchParams.set("filename", file.name || "repo.bundle");
@@ -473,6 +474,12 @@
             button.dataset.originalLabel = button.textContent;
             button.disabled = true;
             button.hidden = true;
+          }
+          if (input) {
+            input.disabled = true;
+          }
+          if (fileControl) {
+            fileControl.hidden = true;
           }
 
           try {
@@ -543,6 +550,12 @@
               button.disabled = false;
               button.hidden = false;
               button.textContent = button.dataset.originalLabel || "Import bundle";
+            }
+            if (input) {
+              input.disabled = false;
+            }
+            if (fileControl) {
+              fileControl.hidden = false;
             }
           }
         });
