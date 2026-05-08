@@ -26,12 +26,13 @@
 % if commit_count == 0 or import_bundle_finalizing:
 <section class="panel">
   <h2>Import Git bundle</h2>
+    <p class="muted">Create a bundle from the source repository using 
+        <strong>git bundle create repo.bundle --all</strong>, 
+        then upload it here.
+    </p>
   % if import_bundle_finalizing:
     <p class="muted" data-import-bundle-status>{{import_bundle_status_message}}</p>
   % else:
-  <p class="muted">Create a bundle from the source repository using 
-                   <strong>git bundle create repo.bundle --all</strong>, 
-                   then upload it here.</p>
   <form method="post" enctype="multipart/form-data" data-import-bundle-form data-upload-url="/{{repo['owner_username']}}/{{repo['name']}}/settings/import-bundle/chunk">
     {{!csrf_field()}}
     <input type="hidden" name="action" value="import_bundle">
