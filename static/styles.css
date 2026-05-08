@@ -154,7 +154,20 @@ button, .button {
 .site-header, .panel-heading, .repo-header { justify-content: space-between; }
 .repo-title-row { display: flex; gap: .75rem; align-items: baseline; flex-wrap: wrap; }
 .repo-title-row h1 { margin-bottom: 0; }
-.brand { color: var(--text); font-weight: 700; text-decoration: none; }
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: .1rem;
+  color: var(--text);
+  font-weight: 700;
+  line-height: 1;
+  text-decoration: none;
+}
+.brand svg {
+  flex: 0 0 auto;
+  transform: scale(1.35);
+  transform-origin: center;
+}
 .nav form, .repo-tabs form, .inline-form { display: inline; }
 .link-button { padding: 0; color: var(--link); background: none; border: 0; text-decoration: underline; }
 .repo-tabs .repo-tab { padding-bottom: .2rem; border-bottom: 2px solid transparent; }
