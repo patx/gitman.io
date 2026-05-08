@@ -13,7 +13,7 @@
 
 <section class="panel">
   % if commits:
-    <ul class="commit-list">
+    <ul class="commit-list" data-paginated-list>
       % for commit in commits:
         <li>
           <code><a href="{{url_with_ref('/' + repo['owner_username'] + '/' + repo['name'] + '/commits/' + commit['node'], selected_ref)}}">{{commit["short_node"]}}</a></code>
@@ -24,7 +24,9 @@
         </li>
       % end
     </ul>
+    % include("pagination.tpl", pagination=pagination)
   % else:
     <p class="empty">No commits yet.</p>
+    % include("pagination.tpl", pagination=pagination)
   % end
 </section>

@@ -92,6 +92,11 @@ REF_LIST_LIMIT = env_int("GITMAN_REF_LIST_LIMIT", 200, minimum=1)
 REF_SEARCH_COMMIT_LIMIT = env_int("GITMAN_REF_SEARCH_COMMIT_LIMIT", 100, minimum=1)
 REPO_SEARCH_CANDIDATE_LIMIT = env_int("GITMAN_REPO_SEARCH_CANDIDATE_LIMIT", 1000, minimum=25)
 ACTIVITY_REPO_SCAN_LIMIT = env_int("GITMAN_ACTIVITY_REPO_SCAN_LIMIT", 100, minimum=1)
+REF_PAGE_SIZE = env_int("GITMAN_REF_PAGE_SIZE", 50, minimum=1)
+PROFILE_REPO_PAGE_SIZE = env_int("GITMAN_PROFILE_REPO_PAGE_SIZE", 25, minimum=1)
+REPO_SEARCH_PAGE_SIZE = env_int("GITMAN_REPO_SEARCH_PAGE_SIZE", 25, minimum=1)
+REF_SEARCH_PAGE_SIZE = env_int("GITMAN_REF_SEARCH_PAGE_SIZE", 50, minimum=1)
+MAX_PAGE_SIZE = env_int("GITMAN_MAX_PAGE_SIZE", 100, minimum=1)
 GIT_BINARY = os.environ.get("GITMAN_GIT_BINARY", "git")
 PAGES_DOMAIN = os.environ.get("GITMAN_PAGES_DOMAIN", "gitman.io").strip().lower().rstrip(".")
 DEFAULT_EXEC_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -898,6 +903,7 @@ def render(template_name, **context):
     context.setdefault("format_ref_label", format_ref_label)
     context.setdefault("url_with_ref", url_with_ref)
     context.setdefault("current_url_with_ref", current_url_with_ref)
+    context.setdefault("current_url_with_page", current_url_with_page)
     context.setdefault("ref_option_label", ref_option_label)
     return template(template_name, **context)
 
@@ -930,6 +936,54 @@ def safe_next_url(value):
     if value and value.startswith("/") and not value.startswith("//"):
         return value
     return "/"
+
+
+def parse_bounded_int(value, default, minimum=1, maximum=None):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed < minimum:
+        return minimum
+    if maximum is not None and parsed > maximum:
+        return maximum
+    return parsed
+
+
+def request_page():
+    return parse_bounded_int(request.query.get("page"), 1, minimum=1)
+
+
+def request_per_page(default):
+    return parse_bounded_int(request.query.get("per_page"), default, minimum=1, maximum=MAX_PAGE_SIZE)
+
+
+def page_offset(page, per_page):
+    return (page - 1) * per_page
+
+
+def pagination_metadata(page, per_page, has_next=False, total=None):
+    if total is not None:
+        has_next = page * per_page < total
+    metadata = {
+        "page": page,
+        "per_page": per_page,
+        "has_prev": page > 1,
+        "prev_page": page - 1 if page > 1 else None,
+        "has_next": bool(has_next),
+        "next_page": page + 1 if has_next else None,
+    }
+    if total is not None:
+        metadata["total"] = total
+    return metadata
+
+
+def current_url_with_page(page):
+    params = [(key, value) for key, value in request.query.allitems() if key != "page"]
+    if page > 1:
+        params.append(("page", str(page)))
+    encoded = urlencode(params)
+    return request.path + (f"?{encoded}" if encoded else "")
 
 
 def repo_path(owner_username, repo_name):
@@ -1048,11 +1102,22 @@ def repo_search_result(repo):
     return result
 
 
-def search_public_repos(query, limit=10):
+def paginate_sequence(items, page, per_page):
+    start = page_offset(page, per_page)
+    page_items = items[start : start + per_page]
+    return page_items, pagination_metadata(page, per_page, has_next=len(items) > start + per_page)
+
+
+def search_public_repos(query, limit=10, page=1, with_pagination=False):
     query = (query or "").strip()[:100]
+    result_limit = parse_bounded_int(limit, REPO_SEARCH_PAGE_SIZE, minimum=1, maximum=MAX_PAGE_SIZE)
+    page = parse_bounded_int(page, 1, minimum=1)
+    offset = page_offset(page, result_limit)
     if not query:
-        return []
-    result_limit = max(1, min(int(limit), 25))
+        empty = []
+        if with_pagination:
+            return {"results": empty, "pagination": pagination_metadata(page, result_limit, has_next=False)}
+        return empty
 
     with db_connect() as conn:
         repos = conn.execute(
@@ -1070,7 +1135,7 @@ def search_public_repos(query, limit=10):
             ORDER BY repositories.updated_at DESC
             LIMIT ?
             """,
-            (max(REPO_SEARCH_CANDIDATE_LIMIT, result_limit),),
+            (max(REPO_SEARCH_CANDIDATE_LIMIT, offset + result_limit),),
         ).fetchall()
 
     matches = []
@@ -1079,7 +1144,17 @@ def search_public_repos(query, limit=10):
         if score is not None:
             matches.append((score, repo))
     matches.sort(key=lambda match: (match[0], match[1]["name"], match[1]["owner_username"]))
-    return [repo_search_result(repo) for _, repo in matches[:result_limit]]
+    results = [repo_search_result(repo) for _, repo in matches[offset : offset + result_limit]]
+    if with_pagination:
+        return {
+            "results": results,
+            "pagination": pagination_metadata(
+                page,
+                result_limit,
+                has_next=len(matches) > offset + result_limit,
+            ),
+        }
+    return results
 
 
 def text_preview(value, limit=180):
@@ -1364,10 +1439,23 @@ def list_recent_actions(limit=50):
     return actions[:limit]
 
 
-def list_owned_repos(owner_id):
+def owned_repo_count(owner_id):
     with db_connect() as conn:
         return conn.execute(
-            """
+            "SELECT COUNT(*) FROM repositories WHERE owner_id = ?",
+            (owner_id,),
+        ).fetchone()[0]
+
+
+def list_owned_repos(owner_id, limit=None, offset=0):
+    params = [owner_id]
+    pagination = ""
+    if limit is not None:
+        pagination = "LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+    with db_connect() as conn:
+        return conn.execute(
+            f"""
             SELECT repositories.*, users.username AS owner_username, COUNT(repo_stars.user_id) AS star_count
             FROM repositories
             JOIN users ON users.id = repositories.owner_id
@@ -1375,15 +1463,29 @@ def list_owned_repos(owner_id):
             WHERE repositories.owner_id = ?
             GROUP BY repositories.id
             ORDER BY repositories.updated_at DESC
+            {pagination}
             """,
-            (owner_id,),
+            params,
         ).fetchall()
 
 
-def list_starred_repos(user_id):
+def starred_repo_count(user_id):
     with db_connect() as conn:
         return conn.execute(
-            """
+            "SELECT COUNT(*) FROM repo_stars WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0]
+
+
+def list_starred_repos(user_id, limit=None, offset=0):
+    params = [user_id]
+    pagination = ""
+    if limit is not None:
+        pagination = "LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+    with db_connect() as conn:
+        return conn.execute(
+            f"""
             SELECT
                 repositories.*,
                 users.username AS owner_username,
@@ -1398,8 +1500,9 @@ def list_starred_repos(user_id):
             JOIN users ON users.id = repositories.owner_id
             WHERE repo_stars.user_id = ?
             ORDER BY repo_stars.created_at DESC
+            {pagination}
             """,
-            (user_id,),
+            params,
         ).fetchall()
 
 
@@ -2714,13 +2817,13 @@ def newest_revision_sort_key(item):
     return (item.get("date", ""), item.get("name", ""))
 
 
-def commit_log(path, limit=50, revision=None):
+def commit_log(path, limit=50, revision=None, offset=0):
     revision = revision_or_default(path, revision)
     if is_null_revision(revision):
         return []
     format_arg = "%H%x1f%h%x1f%an%x1f%ad%x1f%s%x1e"
     completed = run_git(
-        ["log", "-n", str(limit), "--date=iso-strict", f"--format={format_arg}", revision],
+        ["log", "--skip", str(max(0, int(offset))), "-n", str(limit), "--date=iso-strict", f"--format={format_arg}", revision],
         cwd=path,
         check=False,
     )
@@ -2785,17 +2888,17 @@ def all_commit_refs(path, limit=REF_SEARCH_COMMIT_LIMIT):
     return commits
 
 
-def list_repo_tags(path, limit=None):
+def list_repo_tags(path, limit=None, offset=0):
     args = ["for-each-ref", "--sort=-creatordate", "--format=%(refname:short)"]
     if limit:
-        args.extend(["--count", str(limit)])
+        args.extend(["--count", str(max(0, int(offset)) + int(limit))])
     args.append("refs/tags")
     completed = run_git(args, cwd=path, check=False)
     if completed.returncode != 0:
         raise GitCommandError(completed.stderr.strip() or "Unable to read repository tags.", completed.returncode)
 
     tags = []
-    for name in completed.stdout.splitlines():
+    for name in completed.stdout.splitlines()[max(0, int(offset)) :]:
         name = name.strip()
         if not name:
             continue
@@ -2819,7 +2922,8 @@ def list_repo_tags(path, limit=None):
                 "summary": commit["summary"],
             }
         )
-    tags.sort(key=newest_revision_sort_key, reverse=True)
+    if not limit and not offset:
+        tags.sort(key=newest_revision_sort_key, reverse=True)
     return tags
 
 
@@ -2969,11 +3073,11 @@ def branch_ref(path, name):
     return branch if branch and branch["name"] == name else None
 
 
-def list_repo_branches(path, limit=None):
+def list_repo_branches(path, limit=None, offset=0):
     format_arg = "%(refname:short)%00%(objectname)%00%(objectname:short)%00%(committerdate:iso-strict)%00%(subject)"
     args = ["for-each-ref", "--sort=-committerdate", f"--format={format_arg}"]
     if limit:
-        args.extend(["--count", str(limit)])
+        args.extend(["--count", str(max(0, int(offset)) + int(limit))])
     args.append("refs/heads")
     completed = run_git(
         args,
@@ -2985,13 +3089,14 @@ def list_repo_branches(path, limit=None):
 
     head_branch = repo_head_branch(path)
     branches = []
-    for record in completed.stdout.splitlines():
+    for record in completed.stdout.splitlines()[max(0, int(offset)) :]:
         if not record:
             continue
         branch = parse_branch_record(record, head_branch)
         if branch:
             branches.append(branch)
-    branches.sort(key=newest_revision_sort_key, reverse=True)
+    if not limit and not offset:
+        branches.sort(key=newest_revision_sort_key, reverse=True)
     return branches
 
 
@@ -3127,7 +3232,7 @@ def current_url_with_ref(ref_info=None, force=False):
     params = [
         (key, value)
         for key, value in request.query.allitems()
-        if key not in REF_QUERY_KEYS
+        if key not in REF_QUERY_KEYS and key != "page"
     ]
     query = ref_query_string(ref_info, force=force)
     if query:
@@ -3191,15 +3296,24 @@ def ref_matches_query(ref, query):
     return False
 
 
-def search_repo_refs(path, query):
+def search_repo_refs(path, query, page=1, per_page=REF_SEARCH_PAGE_SIZE, with_pagination=False):
     query = (query or "").strip().lower()
+    page = parse_bounded_int(page, 1, minimum=1)
+    per_page = parse_bounded_int(per_page, REF_SEARCH_PAGE_SIZE, minimum=1, maximum=MAX_PAGE_SIZE)
     if not query:
-        return []
+        empty = []
+        if with_pagination:
+            return {"results": empty, "pagination": pagination_metadata(page, per_page, has_next=False)}
+        return empty
 
-    refs = list_repo_branches(path, limit=REF_LIST_LIMIT)
-    refs.extend(list_repo_tags(path, limit=REF_LIST_LIMIT))
+    refs = list_repo_branches(path)
+    refs.extend(list_repo_tags(path))
     refs.extend(all_commit_refs(path, limit=REF_SEARCH_COMMIT_LIMIT))
-    return [ref_search_result(ref) for ref in refs if ref_matches_query(ref, query)]
+    results = [ref_search_result(ref) for ref in refs if ref_matches_query(ref, query)]
+    page_results, pagination = paginate_sequence(results, page, per_page)
+    if with_pagination:
+        return {"results": page_results, "pagination": pagination}
+    return page_results
 
 
 def cached_ref_rows(metadata, key):
@@ -3241,7 +3355,6 @@ def source_repo_ref_options(source_repo, include_tip=True):
         include_closed_branches=True,
         include_tip=include_tip,
         include_tags=False,
-        metadata=repo_metadata_row(source_repo["id"]),
     )
     for option in options:
         option["value"] = source_ref_option_value(
@@ -4320,6 +4433,8 @@ def git_http_backend_response(repo, auth_user, on_success=None, buffer_response=
 
 @app.route("/static/<filename:path>")
 def static_assets(filename):
+    if filename == "icon.png" and not (BASE_DIR / "static" / filename).exists():
+        return static_file("git.svg", root=str(BASE_DIR / "static"))
     return static_file(filename, root=str(BASE_DIR / "static"))
 
 
@@ -4335,8 +4450,13 @@ def index():
 
 @app.route("/-/repos/search")
 def public_repo_search():
-    results = search_public_repos(request.query.get("q", ""))
-    return HTTPResponse(json.dumps({"results": results}), content_type="application/json")
+    results = search_public_repos(
+        request.query.get("q", ""),
+        limit=request_per_page(REPO_SEARCH_PAGE_SIZE),
+        page=request_page(),
+        with_pagination=True,
+    )
+    return HTTPResponse(json.dumps(results), content_type="application/json")
 
 
 @app.route("/signup", method=["GET", "POST"])
@@ -4444,16 +4564,26 @@ def user_profile(username):
     active_tab = request.query.get("tab", "owned")
     if active_tab not in {"owned", "stars"}:
         active_tab = "owned"
-    owned_repos = list_owned_repos(profile_user["id"])
-    starred_repos = list_starred_repos(profile_user["id"])
+    page = request_page()
+    per_page = PROFILE_REPO_PAGE_SIZE
+    offset = page_offset(page, per_page)
+    owned_count = owned_repo_count(profile_user["id"])
+    starred_count = starred_repo_count(profile_user["id"])
+    repos = (
+        list_starred_repos(profile_user["id"], limit=per_page, offset=offset)
+        if active_tab == "stars"
+        else list_owned_repos(profile_user["id"], limit=per_page, offset=offset)
+    )
+    total = starred_count if active_tab == "stars" else owned_count
     return render(
         "profile.tpl",
         profile_user=profile_user,
-        owned_repos=owned_repos,
-        starred_repos=starred_repos,
-        repos=starred_repos if active_tab == "stars" else owned_repos,
+        owned_count=owned_count,
+        starred_count=starred_count,
+        repos=repos,
         active_tab=active_tab,
         is_self=bool(user and user["id"] == profile_user["id"]),
+        pagination=pagination_metadata(page, per_page, total=total),
     )
 
 
@@ -4777,11 +4907,22 @@ def repo_commits(owner, repo_name):
     path = repo_path(owner, repo_name)
     selected_ref = selected_repo_ref(path)
     revision = ref_revision(selected_ref)
+    page = request_page()
+    per_page = REF_PAGE_SIZE
+    offset = page_offset(page, per_page)
+    commits = commit_log(path, limit=per_page + 1, revision=revision, offset=offset)
+    context = repo_page_context(repo, path, selected_ref=selected_ref)
     return render(
         "commits.tpl",
         repo=repo,
-        commits=commit_log(path, revision=revision),
-        **repo_page_context(repo, path, selected_ref=selected_ref),
+        commits=commits[:per_page],
+        pagination=pagination_metadata(
+            page,
+            per_page,
+            has_next=len(commits) > per_page,
+            total=context["commit_count"],
+        ),
+        **context,
     )
 
 
@@ -4793,12 +4934,19 @@ def repo_tags(owner, repo_name):
     path = repo_path(owner, repo_name)
     metadata = repo_metadata_for_context(repo, path)
     tag_count = int(metadata["tag_count"] or 0) if metadata else 0
-    tags = cached_ref_rows(metadata, "tag_refs_json") or list_repo_tags(path, limit=REF_LIST_LIMIT)
+    page = request_page()
+    per_page = REF_PAGE_SIZE
+    tags = list_repo_tags(path, limit=per_page + 1, offset=page_offset(page, per_page))
     return render(
         "tags.tpl",
         repo=repo,
-        tags=tags,
-        tags_truncated=bool(tag_count and tag_count > len(tags)),
+        tags=tags[:per_page],
+        pagination=pagination_metadata(
+            page,
+            per_page,
+            has_next=len(tags) > per_page,
+            total=tag_count if tag_count else None,
+        ),
         tag_count=tag_count or len(tags),
         ref_list_limit=REF_LIST_LIMIT,
         clone_url=clone_url(owner, repo_name),
@@ -4814,12 +4962,19 @@ def repo_branches(owner, repo_name):
     path = repo_path(owner, repo_name)
     metadata = repo_metadata_for_context(repo, path)
     branch_count = int(metadata["branch_count"] or 0) if metadata else 0
-    branches = cached_ref_rows(metadata, "branch_refs_json") or list_repo_branches(path, limit=REF_LIST_LIMIT)
+    page = request_page()
+    per_page = REF_PAGE_SIZE
+    branches = list_repo_branches(path, limit=per_page + 1, offset=page_offset(page, per_page))
     return render(
         "branches.tpl",
         repo=repo,
-        branches=branches,
-        branches_truncated=bool(branch_count and branch_count > len(branches)),
+        branches=branches[:per_page],
+        pagination=pagination_metadata(
+            page,
+            per_page,
+            has_next=len(branches) > per_page,
+            total=branch_count if branch_count else None,
+        ),
         branch_count=branch_count or len(branches),
         ref_list_limit=REF_LIST_LIMIT,
         clone_url=clone_url(owner, repo_name),
@@ -4833,8 +4988,14 @@ def repo_ref_search(owner, repo_name):
     if not repo:
         abort(404, "Repository not found.")
     path = repo_path(owner, repo_name)
-    results = search_repo_refs(path, request.query.get("q", ""))
-    return HTTPResponse(json.dumps({"results": results}), content_type="application/json")
+    results = search_repo_refs(
+        path,
+        request.query.get("q", ""),
+        page=request_page(),
+        per_page=request_per_page(REF_SEARCH_PAGE_SIZE),
+        with_pagination=True,
+    )
+    return HTTPResponse(json.dumps(results), content_type="application/json")
 
 
 @app.route("/<owner>/<repo_name>/commits/<node>", method=["GET", "POST"])

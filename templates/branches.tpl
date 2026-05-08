@@ -14,10 +14,7 @@
 
 <section class="panel">
   % if branches:
-    % if get("branches_truncated", False):
-      <p class="notice">Showing {{len(branches)}} of {{branch_count}} branches. Use ref search to find older branches.</p>
-    % end
-    <ul class="commit-list">
+    <ul class="commit-list" data-paginated-list>
       % for branch in branches:
         <li>
           <code>{{branch["name"]}}</code>
@@ -33,7 +30,9 @@
         </li>
       % end
     </ul>
+    % include("pagination.tpl", pagination=pagination)
   % else:
     <p class="empty">No branches yet.</p>
+    % include("pagination.tpl", pagination=pagination)
   % end
 </section>

@@ -169,22 +169,24 @@
 
       const buildRefUrl = (result) => {
         const url = new URL(window.location.href);
-        ["ref", "ref_type", "ref_value"].forEach((key) => url.searchParams.delete(key));
+        ["ref", "ref_type", "ref_value", "page"].forEach((key) => url.searchParams.delete(key));
         const type = result.type || "tip";
         url.searchParams.set("ref_type", type);
         if (type !== "tip") url.searchParams.set("ref", result.name || "");
         return `${url.pathname}${url.search}${url.hash}`;
       };
 
-      const renderSearchResults = (picker, results) => {
+      const renderSearchResults = (picker, results, append = false) => {
         const empty = picker.querySelector("[data-ref-picker-empty]");
         const options = picker.querySelectorAll("[data-ref-picker-option]");
 
-        clearSearchResults(picker);
-        options.forEach((option) => {
-          option.hidden = true;
-          option.style.display = "none";
-        });
+        if (!append) {
+          clearSearchResults(picker);
+          options.forEach((option) => {
+            option.hidden = true;
+            option.style.display = "none";
+          });
+        }
 
         results.forEach((result) => {
           const option = document.createElement("a");
@@ -198,42 +200,69 @@
           empty.parentElement.insertBefore(option, empty);
         });
 
-        if (empty) empty.hidden = results.length > 0;
+        if (empty) {
+          empty.hidden = Boolean(picker.querySelector("[data-ref-picker-search-result]"));
+        }
       };
 
-      const searchRefs = (picker) => {
+      const searchRefs = (picker, append = false) => {
         const search = picker.querySelector("[data-ref-picker-search]");
         const query = search ? search.value.trim() : "";
-        const token = (picker._refPickerSearchToken || 0) + 1;
-        picker._refPickerSearchToken = token;
+        const state = picker._refPickerSearchState || {
+          token: 0,
+          query: "",
+          page: 0,
+          hasNext: false,
+          loading: false,
+        };
 
         if (!query) {
+          picker._refPickerSearchState = { ...state, query: "", page: 0, hasNext: false, loading: false };
           showInitialOptions(picker);
           return;
         }
 
+        if (append) {
+          if (state.query !== query || state.loading || !state.hasNext) return;
+        }
+
+        const token = append ? state.token : state.token + 1;
+        const page = append ? state.page + 1 : 1;
+        picker._refPickerSearchState = { ...state, token, query, loading: true };
         const empty = picker.querySelector("[data-ref-picker-empty]");
-        picker.querySelectorAll("[data-ref-picker-option]").forEach((option) => {
-          option.hidden = true;
-          option.style.display = "none";
-        });
-        clearSearchResults(picker);
-        if (empty) empty.hidden = true;
+        if (!append) {
+          picker.querySelectorAll("[data-ref-picker-option]").forEach((option) => {
+            option.hidden = true;
+            option.style.display = "none";
+          });
+          clearSearchResults(picker);
+          if (empty) empty.hidden = true;
+        }
 
         const url = new URL(picker.dataset.refSearchUrl, window.location.origin);
         url.searchParams.set("q", query);
+        url.searchParams.set("page", String(page));
         fetch(url.toString(), { headers: { Accept: "application/json" } })
           .then((response) => {
             if (!response.ok) throw new Error("Unable to search refs.");
             return response.json();
           })
           .then((data) => {
-            if (picker._refPickerSearchToken !== token) return;
-            renderSearchResults(picker, data.results || []);
+            const current = picker._refPickerSearchState || {};
+            if (current.token !== token || current.query !== query) return;
+            renderSearchResults(picker, data.results || [], append);
+            picker._refPickerSearchState = {
+              ...current,
+              page,
+              hasNext: Boolean(data.pagination && data.pagination.has_next),
+              loading: false,
+            };
           })
           .catch(() => {
-            if (picker._refPickerSearchToken !== token) return;
-            renderSearchResults(picker, []);
+            const current = picker._refPickerSearchState || {};
+            if (current.token !== token || current.query !== query) return;
+            renderSearchResults(picker, [], append);
+            picker._refPickerSearchState = { ...current, loading: false, hasNext: false };
           });
       };
 
@@ -268,6 +297,7 @@
       pickers.forEach((picker) => {
         const button = picker.querySelector(".ref-picker-toggle");
         const search = picker.querySelector("[data-ref-picker-search]");
+        const options = picker.querySelector(".ref-picker-options");
 
         if (button) {
           button.addEventListener("click", () => {
@@ -283,6 +313,14 @@
         if (search) {
           search.addEventListener("input", () => {
             searchRefs(picker);
+          });
+        }
+
+        if (options) {
+          options.addEventListener("scroll", () => {
+            if (options.scrollTop + options.clientHeight >= options.scrollHeight - 32) {
+              searchRefs(picker, true);
+            }
           });
         }
       });
@@ -311,6 +349,7 @@
 
       let activeToken = 0;
       let searchTimeout = null;
+      let searchState = { query: "", page: 0, hasNext: false, loading: false, token: 0 };
 
       const setOpen = (isOpen) => {
         menu.hidden = !isOpen;
@@ -321,8 +360,8 @@
         menu.querySelectorAll("[data-repo-search-result]").forEach((result) => result.remove());
       };
 
-      const renderResults = (results) => {
-        clearResults();
+      const renderResults = (results, append = false) => {
+        if (!append) clearResults();
 
         results.forEach((result) => {
           const item = document.createElement("div");
@@ -348,36 +387,54 @@
           }
         });
 
-        if (empty) empty.hidden = results.length > 0;
+        if (empty) empty.hidden = Boolean(menu.querySelector("[data-repo-search-result]"));
         setOpen(Boolean(input.value.trim()));
       };
 
-      const searchRepos = () => {
+      const searchRepos = (append = false) => {
         const query = input.value.trim();
-        const token = activeToken + 1;
-        activeToken = token;
 
         if (!query) {
           clearResults();
           if (empty) empty.hidden = true;
           setOpen(false);
+          searchState = { ...searchState, query: "", page: 0, hasNext: false, loading: false };
           return;
+        }
+
+        if (append && (searchState.query !== query || searchState.loading || !searchState.hasNext)) return;
+
+        const token = append ? searchState.token : activeToken + 1;
+        const page = append ? searchState.page + 1 : 1;
+        activeToken = token;
+        searchState = { ...searchState, token, query, loading: true };
+        if (!append) {
+          clearResults();
+          if (empty) empty.hidden = true;
         }
 
         const url = new URL(search.dataset.repoSearchUrl, window.location.origin);
         url.searchParams.set("q", query);
+        url.searchParams.set("page", String(page));
         fetch(url.toString(), { headers: { Accept: "application/json" } })
           .then((response) => {
             if (!response.ok) throw new Error("Unable to search repositories.");
             return response.json();
           })
           .then((data) => {
-            if (activeToken !== token) return;
-            renderResults(data.results || []);
+            if (activeToken !== token || searchState.query !== query) return;
+            renderResults(data.results || [], append);
+            searchState = {
+              ...searchState,
+              page,
+              hasNext: Boolean(data.pagination && data.pagination.has_next),
+              loading: false,
+            };
           })
           .catch(() => {
-            if (activeToken !== token) return;
-            renderResults([]);
+            if (activeToken !== token || searchState.query !== query) return;
+            renderResults([], append);
+            searchState = { ...searchState, loading: false, hasNext: false };
           });
       };
 
@@ -390,12 +447,80 @@
         if (input.value.trim()) searchRepos();
       });
 
+      menu.addEventListener("scroll", () => {
+        if (menu.scrollTop + menu.clientHeight >= menu.scrollHeight - 32) {
+          searchRepos(true);
+        }
+      });
+
       document.addEventListener("click", (event) => {
         if (!search.contains(event.target)) setOpen(false);
       });
 
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") setOpen(false);
+      });
+    })();
+  </script>
+  <script>
+    (() => {
+      const pager = document.querySelector("[data-pagination]");
+      const list = document.querySelector("[data-paginated-list]");
+      if (!pager || !list) return;
+
+      let loading = false;
+
+      const setLoading = (isLoading) => {
+        loading = isLoading;
+        const status = pager.querySelector("[data-pagination-status]");
+        if (status) status.hidden = !isLoading;
+      };
+
+      const loadNextPage = () => {
+        const nextUrl = pager.dataset.nextUrl;
+        if (loading || !nextUrl) return;
+        setLoading(true);
+
+        fetch(nextUrl, { headers: { Accept: "text/html" } })
+          .then((response) => {
+            if (!response.ok) throw new Error("Unable to load the next page.");
+            return response.text();
+          })
+          .then((html) => {
+            const doc = new DOMParser().parseFromString(html, "text/html");
+            const nextList = doc.querySelector("[data-paginated-list]");
+            const nextPager = doc.querySelector("[data-pagination]");
+            if (!nextList) throw new Error("Next page has no list.");
+
+            Array.from(nextList.children).forEach((item) => {
+              list.appendChild(document.importNode(item, true));
+            });
+
+            if (nextPager && nextPager.dataset.nextUrl) {
+              pager.dataset.nextUrl = nextPager.dataset.nextUrl;
+              setLoading(false);
+            } else {
+              pager.remove();
+            }
+          })
+          .catch(() => {
+            setLoading(false);
+          });
+      };
+
+      if ("IntersectionObserver" in window) {
+        const observer = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) loadNextPage();
+          });
+        }, { rootMargin: "600px 0px" });
+        observer.observe(pager);
+        return;
+      }
+
+      window.addEventListener("scroll", () => {
+        const bottom = pager.getBoundingClientRect().top - window.innerHeight;
+        if (bottom < 600) loadNextPage();
       });
     })();
   </script>

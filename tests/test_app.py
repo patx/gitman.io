@@ -565,6 +565,32 @@ def test_public_repo_search_uses_bounded_candidate_set(isolated_app, monkeypatch
     assert [result["full_name"] for result in isolated_app.search_public_repos("needle", limit=1)] == ["alice/needle"]
 
 
+def test_public_repo_search_api_paginates_results(isolated_app):
+    owner = create_user("alice")
+    for name in ("demo-a", "demo-b", "demo-c"):
+        isolated_app.create_repository(owner, name, "")
+    client = WsgiClient(isolated_app.app)
+
+    first_response = client.get("/-/repos/search?q=demo&per_page=2")
+    second_response = client.get("/-/repos/search?q=demo&per_page=2&page=2")
+    invalid_response = client.get("/-/repos/search?q=demo&per_page=2&page=0")
+    empty_response = client.get("/-/repos/search?per_page=2")
+
+    first = json.loads(first_response.text)
+    second = json.loads(second_response.text)
+    invalid = json.loads(invalid_response.text)
+    empty = json.loads(empty_response.text)
+
+    assert [result["name"] for result in first["results"]] == ["demo-a", "demo-b"]
+    assert first["pagination"]["has_next"] is True
+    assert first["pagination"]["next_page"] == 2
+    assert [result["name"] for result in second["results"]] == ["demo-c"]
+    assert second["pagination"]["has_prev"] is True
+    assert invalid["pagination"]["page"] == 1
+    assert empty["results"] == []
+    assert empty["pagination"]["has_next"] is False
+
+
 def test_commit_activity_scans_bounded_repo_set(isolated_app, monkeypatch):
     monkeypatch.setattr(gitman, "ACTIVITY_REPO_SCAN_LIMIT", 1)
     owner = create_user("alice")
@@ -1416,6 +1442,94 @@ def test_git_read_helpers_return_files_readme_commits_and_default_ref(isolated_a
     assert isolated_app.is_ancestor(path, isolated_app.NULL_REV, node)
 
 
+def test_repo_commit_page_paginates_and_preserves_ref_query(isolated_app, monkeypatch):
+    monkeypatch.setattr(gitman, "REF_PAGE_SIZE", 2)
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "demo", "")
+    path = isolated_app.repo_path("alice", "demo")
+    commit_file(path, "one.txt", "one\n", message="one", user="alice")
+    commit_file(path, "two.txt", "two\n", message="two", user="alice")
+    commit_file(path, "three.txt", "three\n", message="three", user="alice")
+    client = WsgiClient(isolated_app.app)
+
+    first = client.get("/alice/demo/commits?ref_type=branch&ref=main")
+    second = client.get("/alice/demo/commits?ref_type=branch&ref=main&page=2")
+
+    assert "three" in first.text
+    assert "two" in first.text
+    assert "<strong>one</strong>" not in first.text
+    assert 'data-next-url="/alice/demo/commits?ref_type=branch&amp;ref=main&amp;page=2"' in first.text
+    assert ">Next</a>" not in first.text
+    assert "one" in second.text
+
+
+def test_repo_branch_and_tag_pages_paginate_refs(isolated_app, monkeypatch):
+    monkeypatch.setattr(gitman, "REF_PAGE_SIZE", 2)
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "many", "")
+    path = isolated_app.repo_path("alice", "many")
+    node = commit_file(path, "README.md", "# Many\n", message="initial", user="alice")
+    for index in range(4):
+        isolated_app.run_git(["update-ref", f"refs/heads/topic{index:02d}", node], cwd=path)
+        isolated_app.run_git(["tag", f"v{index:02d}", node], cwd=path)
+    client = WsgiClient(isolated_app.app)
+
+    branches_first = client.get("/alice/many/branches")
+    branches_second = client.get("/alice/many/branches?page=2")
+    tags_first = client.get("/alice/many/tags")
+    tags_second = client.get("/alice/many/tags?page=2")
+
+    branch_first_codes = re.findall(r"<code>(?:main|topic\d\d)</code>", branches_first.text)
+    branch_second_codes = re.findall(r"<code>(?:main|topic\d\d)</code>", branches_second.text)
+    tag_first_codes = re.findall(r"<code>v\d\d</code>", tags_first.text)
+    tag_second_codes = re.findall(r"<code>v\d\d</code>", tags_second.text)
+
+    assert len(branch_first_codes) == 2
+    assert len(branch_second_codes) == 2
+    assert set(branch_first_codes).isdisjoint(branch_second_codes)
+    assert 'data-next-url="/alice/many/branches?page=2"' in branches_first.text
+    assert ">Next</a>" not in branches_first.text
+    assert "Showing" not in branches_first.text
+    assert len(tag_first_codes) == 2
+    assert len(tag_second_codes) == 2
+    assert set(tag_first_codes).isdisjoint(tag_second_codes)
+    assert 'data-next-url="/alice/many/tags?page=2"' in tags_first.text
+    assert ">Next</a>" not in tags_first.text
+    assert "Showing" not in tags_first.text
+
+
+def test_profile_repositories_paginate_owned_and_starred_tabs(isolated_app, monkeypatch):
+    monkeypatch.setattr(gitman, "PROFILE_REPO_PAGE_SIZE", 2)
+    owner = create_user("alice")
+    viewer = create_user("bob")
+    for index in range(3):
+        isolated_app.create_repository(owner, f"demo-{index}", "")
+    with isolated_app.db_connect() as conn:
+        repos = conn.execute("SELECT id, name FROM repositories ORDER BY name").fetchall()
+        for index, repo in enumerate(repos):
+            timestamp = f"2030-01-01T00:00:0{index}Z"
+            conn.execute("UPDATE repositories SET updated_at = ? WHERE id = ?", (timestamp, repo["id"]))
+            conn.execute(
+                "INSERT INTO repo_stars (repo_id, user_id, created_at) VALUES (?, ?, ?)",
+                (repo["id"], viewer["id"], timestamp),
+            )
+    client = WsgiClient(isolated_app.app)
+
+    owned_first = client.get("/alice")
+    owned_second = client.get("/alice?page=2")
+    starred_first = client.get("/bob?tab=stars")
+    starred_second = client.get("/bob?tab=stars&page=2")
+
+    assert "Owned (3)" in owned_first.text
+    assert "demo-2" in owned_first.text
+    assert "demo-0" not in owned_first.text
+    assert "demo-0" in owned_second.text
+    assert "Starred (3)" in starred_first.text
+    assert 'data-next-url="/bob?tab=stars&amp;page=2"' in starred_first.text
+    assert ">Next</a>" not in starred_first.text
+    assert "demo-0" in starred_second.text
+
+
 def test_pages_host_serves_user_site_and_enabled_project_docs(isolated_app):
     owner = create_user("alice")
     isolated_app.create_repository(owner, "alice.gitman.io", "")
@@ -1837,6 +1951,32 @@ def test_repo_ref_search_finds_refs_outside_initial_picker_options(isolated_app)
         for result in json.loads(tag_response.text)["results"]
     )
     assert json.loads(empty_response.text)["results"] == []
+
+
+def test_repo_ref_search_api_paginates_results(isolated_app):
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "many", "")
+    path = isolated_app.repo_path("alice", "many")
+    node = commit_file(path, "README.md", "# Many\n", message="initial", user=owner["username"])
+    for index in range(4):
+        isolated_app.run_git(["update-ref", f"refs/heads/topic{index:02d}", node], cwd=path)
+    client = WsgiClient(isolated_app.app)
+
+    first_response = client.get("/alice/many/refs/search?q=topic&per_page=2")
+    second_response = client.get("/alice/many/refs/search?q=topic&per_page=2&page=2")
+    invalid_response = client.get("/alice/many/refs/search?q=topic&per_page=2&page=0")
+
+    first = json.loads(first_response.text)
+    second = json.loads(second_response.text)
+    invalid = json.loads(invalid_response.text)
+
+    assert first_response.status_code == 200
+    assert len(first["results"]) == 2
+    assert first["pagination"]["has_next"] is True
+    assert first["pagination"]["next_page"] == 2
+    assert len(second["results"]) == 2
+    assert second["pagination"]["has_prev"] is True
+    assert invalid["pagination"]["page"] == 1
 
 
 def test_repo_ref_search_finds_commits_by_subject_and_sha_across_all_refs(isolated_app):

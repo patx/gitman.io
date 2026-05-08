@@ -125,6 +125,15 @@ button, .button {
   text-decoration: none;
   cursor: pointer;
 }
+.pagination {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem;
+  align-items: center;
+  margin-top: 1rem;
+}
+.pagination-current, .pagination-disabled { color: var(--muted); }
+.pagination-disabled { padding: .3rem 0; }
 
 .sr-only {
   position: absolute;

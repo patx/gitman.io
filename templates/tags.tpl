@@ -14,10 +14,7 @@
 
 <section class="panel">
   % if tags:
-    % if get("tags_truncated", False):
-      <p class="notice">Showing {{len(tags)}} of {{tag_count}} tags. Use ref search to find older tags.</p>
-    % end
-    <ul class="commit-list">
+    <ul class="commit-list" data-paginated-list>
       % for tag in tags:
         <li>
           <code>{{tag["name"]}}</code>
@@ -33,7 +30,9 @@
         </li>
       % end
     </ul>
+    % include("pagination.tpl", pagination=pagination)
   % else:
     <p class="empty">No tags yet.</p>
+    % include("pagination.tpl", pagination=pagination)
   % end
 </section>
