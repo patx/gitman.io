@@ -49,7 +49,6 @@
 <section class="panel">
   <h2>Pages</h2>
   % if pages_settings["docs_publishable"]:
-    <p class="muted">Publish this repository from <code>docs/</code>.</p>
     <p class="muted"><strong>Pages URL:</strong> <a href="{{pages_settings['url']}}">{{pages_settings["url"]}}</a></p>
     <form class="panel-heading" method="post">
       {{!csrf_field()}}
