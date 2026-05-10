@@ -1,6 +1,11 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 :root {
   color-scheme: light;
   --page-bg: #fff;
@@ -310,6 +315,15 @@ button, .button {
 .activity-detail { color: var(--detail); }
 .comment-list { display: grid; gap: 1rem; }
 .comment { border-bottom: 1px solid var(--soft-border); }
+.comment, .activity-feed li { min-width: 0; }
+.comment p, .activity-title, .activity-detail {
+  font-size: 1rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.comment small, .activity-feed .muted {
+  font-size: .875rem;
+}
 .diff { max-height: 70vh; }
 .file-table { width: 100%; border-collapse: collapse; }
 .file-table td { padding: .4rem 0; border-bottom: 1px solid var(--soft-border); }

@@ -517,6 +517,15 @@ def test_styles_support_system_dark_mode(isolated_app):
     assert 'media="(prefers-color-scheme: dark)"' in response.text
 
 
+def test_styles_keep_comment_and_activity_text_readable_on_mobile(isolated_app):
+    css = (REPO_ROOT_FOR_IMPORTS / "static" / "styles.css").read_text(encoding="utf-8")
+
+    assert "-webkit-text-size-adjust: 100%" in css
+    assert "text-size-adjust: 100%" in css
+    assert ".comment p, .activity-title, .activity-detail" in css
+    assert "overflow-wrap: anywhere" in css
+
+
 def test_index_public_repo_search_finds_repositories_by_fuzzy_name(isolated_app):
     owner = create_user("alice")
     other = create_user("bob")
