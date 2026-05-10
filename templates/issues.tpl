@@ -14,19 +14,19 @@
 
 <section class="panel">
   <div class="panel-heading">
-      <form class="list-search" action="/{{repo['owner_username']}}/{{repo['name']}}/issues" method="get" role="search">
+      <form class="repo-search-form" action="/{{repo['owner_username']}}/{{repo['name']}}/issues" method="get" role="search">
         <input type="hidden" name="status" value="{{status}}">
         <label class="sr-only" for="issue-search-input">Search issues</label>
-        <input id="issue-search-input" type="search" name="q" value="{{q}}" placeholder="Search issues" autocomplete="off">
-        <button type="submit">Search</button>
-        % if q:
-          <a href="{{current_url_with_params(q=None)}}">Clear</a>
-        % end
+        <input id="issue-search-input" class="repo-search-input" type="search" name="q" value="{{q}}" placeholder="Search issues" autocomplete="off">
+        <button class="sr-only" type="submit">Search issues</button>
       </form>
     <div class="filters">
       <a class="{{'active' if status == 'open' else ''}}" href="{{current_url_with_params(status='open')}}">Open ({{counts["open"]}})</a>
       <a class="{{'active' if status == 'closed' else ''}}" href="{{current_url_with_params(status='closed')}}">Closed ({{counts["closed"]}})</a>
       <a class="{{'active' if status == 'all' else ''}}" href="{{current_url_with_params(status='all')}}">All</a>
+      % if q:
+        <a href="{{current_url_with_params(q=None)}}">Clear search</a>
+      % end
       % if user:
         <a href="/{{repo['owner_username']}}/{{repo['name']}}/issues/new">New issue</a>
       % else:

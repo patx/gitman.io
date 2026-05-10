@@ -187,6 +187,14 @@ button, .button {
   max-width: 100%;
   align-self: flex-start;
 }
+.repo-search-input {
+  width: 350px;
+  margin-bottom: 10px;
+}
+.repo-search-form {
+  display: block;
+  margin: 0;
+}
 .panel-heading > .repo-search { margin-left: auto; }
 .hero-actions .repo-search-menu { left: 0; right: auto; }
 .repo-search-menu {
@@ -320,6 +328,7 @@ button, .button {
 @media (max-width: 760px) {
   body { margin-top: 1rem; }
   .repo-search { width: 100%; }
+  .repo-search-input { width: 100%; }
   .repo-search-menu { left: 0; right: auto; width: 100%; }
   .grid.two, .commit-list li, .tag-list li { grid-template-columns: 1fr; }
 }
