@@ -2161,11 +2161,27 @@ def test_bottle_profile_star_fork_and_repo_settings_flows(isolated_app):
     create_repo_with_refs(owner)
 
     bob_client = WsgiClient(isolated_app.app)
+    source_url = "/alice/demo/src?ref_type=branch&ref=feature"
+    guest_source_response = bob_client.get(source_url)
+    assert guest_source_response.status_code == 200
+    expected_login_href = (
+        'href="/login?next=%2Falice%2Fdemo%2Fsrc%3Fref_type%3Dbranch%26ref%3Dfeature"'
+    )
+    assert expected_login_href in guest_source_response.text
+
     response = login_client(bob_client, "bob")
     assert response.status_code == 303
 
-    response = bob_client.post("/alice/demo/star", {"action": "star"})
+    source_response = bob_client.get(source_url)
+    assert source_response.status_code == 200
+    assert 'name="next" value="/alice/demo/src?ref_type=branch&amp;ref=feature"' in source_response.text
+
+    response = bob_client.post(
+        "/alice/demo/star",
+        {"action": "star", "next": "/alice/demo/src?ref_type=branch&ref=feature"},
+    )
     assert response.status_code == 303
+    assert response.location_path == "/alice/demo/src?ref_type=branch&ref=feature"
     assert isolated_app.repo_star_count(isolated_app.get_repo("alice", "demo")["id"]) == 1
 
     response = bob_client.post("/alice/demo/fork", {"name": "demo", "description": "Forked"})

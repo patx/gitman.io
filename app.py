@@ -904,6 +904,8 @@ def render(template_name, **context):
     context.setdefault("render_repo_description", render_repo_description)
     context.setdefault("format_ref_label", format_ref_label)
     context.setdefault("url_with_ref", url_with_ref)
+    context.setdefault("login_url", login_url)
+    context.setdefault("current_url", current_url)
     context.setdefault("current_url_with_ref", current_url_with_ref)
     context.setdefault("current_url_with_page", current_url_with_page)
     context.setdefault("current_url_with_params", current_url_with_params)
@@ -935,10 +937,18 @@ def require_login():
     redirect("/login?next=" + quote(next_url, safe="/?=&"))
 
 
-def safe_next_url(value):
+def safe_next_url(value, default="/"):
     if value and value.startswith("/") and not value.startswith("//"):
         return value
-    return "/"
+    return default
+
+
+def current_url():
+    return request.path + (f"?{request.query_string}" if request.query_string else "")
+
+
+def login_url(next_url=None):
+    return "/login?" + urlencode({"next": safe_next_url(next_url or current_url())})
 
 
 def parse_bounded_int(value, default, minimum=1, maximum=None):
@@ -4758,7 +4768,7 @@ def repo_star(owner, repo_name):
         unstar_repo(user, repo)
     else:
         star_repo(user, repo)
-    redirect(f"/{owner}/{repo_name}")
+    redirect(safe_next_url(request.forms.get("next"), f"/{owner}/{repo_name}"))
 
 
 @app.route("/<owner>/<repo_name>/fork", method=["GET", "POST"])

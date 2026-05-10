@@ -9,6 +9,7 @@
   % if user:
     <form class="inline-form" method="post" action="/{{repo['owner_username']}}/{{repo['name']}}/star">
       {{!csrf_field()}}
+      <input type="hidden" name="next" value="{{current_url()}}">
       % if is_starred:
         <input type="hidden" name="action" value="unstar">
         <button class="button-link" type="submit">Unstar ({{star_count}})</button>
@@ -18,7 +19,7 @@
       % end
     </form>
   % else:
-    <a class="button-link" href="/login?next=/{{repo['owner_username']}}/{{repo['name']}}">Star ({{star_count}})</a>
+    <a class="button-link" href="{{login_url(current_url())}}">Star ({{star_count}})</a>
   % end
   % if user and not is_owner and not has_fork:
     <form class="inline-form" method="post" action="/{{repo['owner_username']}}/{{repo['name']}}/fork">
