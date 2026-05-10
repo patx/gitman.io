@@ -4644,7 +4644,7 @@ def login():
     redirect(next_url)
 
 
-@app.post("/logout")
+@app.route("/logout", method=["GET"])
 def logout():
     logout_user()
     redirect("/")

@@ -12,7 +12,7 @@
   <p class="muted"><small>
     Joined {{profile_user["created_at"]}}
     % if is_self:
-      <a class="button-link" href="/settings/profile">Edit profile</a>
+      <a class="button-link" href="/settings/profile">Edit profile</a> &middot; <a class="button-link" href="/logout">Log out</a>
     % end
   </small></p>
   % if profile_user["bio"]:

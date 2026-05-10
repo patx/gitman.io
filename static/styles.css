@@ -179,8 +179,17 @@ button, .button {
 }
 .brand svg {
   flex: 0 0 auto;
-  transform: scale(3);
+  transform: scale(2);
   transform-origin: center;
+}
+.nav-icons {
+  display: inline-flex;
+  align-items: center;
+  color: black;
+  font-weight: 700;
+  line-height: 1;
+  text-decoration: none;
+  color: var(--muted);
 }
 .nav form, .repo-tabs form, .inline-form { display: inline; }
 .link-button { padding: 0; color: var(--link); background: none; border: 0; text-decoration: underline; }
