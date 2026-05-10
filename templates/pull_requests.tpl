@@ -14,12 +14,6 @@
 
 <section class="panel">
   <div class="panel-heading">
-    <h2>Pull requests</h2>
-    <div class="filters">
-      <a class="{{'active' if status == 'open' else ''}}" href="{{current_url_with_params(status='open')}}">Open ({{counts["open"]}})</a>
-      <a class="{{'active' if status == 'merged' else ''}}" href="{{current_url_with_params(status='merged')}}">Merged ({{counts["merged"]}})</a>
-      <a class="{{'active' if status == 'closed' else ''}}" href="{{current_url_with_params(status='closed')}}">Closed ({{counts["closed"]}})</a>
-      <a class="{{'active' if status == 'all' else ''}}" href="{{current_url_with_params(status='all')}}">All</a>
       <form class="list-search" action="/{{repo['owner_username']}}/{{repo['name']}}/pulls" method="get" role="search">
         <input type="hidden" name="status" value="{{status}}">
         <label class="sr-only" for="pull-request-search-input">Search pull requests</label>
@@ -29,6 +23,11 @@
           <a href="{{current_url_with_params(q=None)}}">Clear</a>
         % end
       </form>
+    <div class="filters">
+      <a class="{{'active' if status == 'open' else ''}}" href="{{current_url_with_params(status='open')}}">Open ({{counts["open"]}})</a>
+      <a class="{{'active' if status == 'merged' else ''}}" href="{{current_url_with_params(status='merged')}}">Merged ({{counts["merged"]}})</a>
+      <a class="{{'active' if status == 'closed' else ''}}" href="{{current_url_with_params(status='closed')}}">Closed ({{counts["closed"]}})</a>
+      <a class="{{'active' if status == 'all' else ''}}" href="{{current_url_with_params(status='all')}}">All</a>
       % if user:
         <a href="/{{repo['owner_username']}}/{{repo['name']}}/pulls/new">New pull request</a>
       % else:

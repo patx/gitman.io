@@ -14,11 +14,6 @@
 
 <section class="panel">
   <div class="panel-heading">
-    <h2>Issues</h2>
-    <div class="filters">
-      <a class="{{'active' if status == 'open' else ''}}" href="{{current_url_with_params(status='open')}}">Open ({{counts["open"]}})</a>
-      <a class="{{'active' if status == 'closed' else ''}}" href="{{current_url_with_params(status='closed')}}">Closed ({{counts["closed"]}})</a>
-      <a class="{{'active' if status == 'all' else ''}}" href="{{current_url_with_params(status='all')}}">All</a>
       <form class="list-search" action="/{{repo['owner_username']}}/{{repo['name']}}/issues" method="get" role="search">
         <input type="hidden" name="status" value="{{status}}">
         <label class="sr-only" for="issue-search-input">Search issues</label>
@@ -28,6 +23,10 @@
           <a href="{{current_url_with_params(q=None)}}">Clear</a>
         % end
       </form>
+    <div class="filters">
+      <a class="{{'active' if status == 'open' else ''}}" href="{{current_url_with_params(status='open')}}">Open ({{counts["open"]}})</a>
+      <a class="{{'active' if status == 'closed' else ''}}" href="{{current_url_with_params(status='closed')}}">Closed ({{counts["closed"]}})</a>
+      <a class="{{'active' if status == 'all' else ''}}" href="{{current_url_with_params(status='all')}}">All</a>
       % if user:
         <a href="/{{repo['owner_username']}}/{{repo['name']}}/issues/new">New issue</a>
       % else:
