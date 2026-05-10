@@ -900,6 +900,7 @@ def render(template_name, **context):
     context.setdefault("error", None)
     context.setdefault("notice", None)
     context.setdefault("csrf_field", csrf_field)
+    context.setdefault("render_markdown", render_markdown)
     context.setdefault("render_markdown_links", render_markdown_links)
     context.setdefault("render_repo_description", render_repo_description)
     context.setdefault("format_ref_label", format_ref_label)

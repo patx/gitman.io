@@ -34,9 +34,7 @@
   % if comments:
     <div class="comment-list">
       % for comment in comments:
-        <article class="comment">
-            <p><strong><a href="/{{comment["author_username"]}}">@{{comment["author_username"]}}</a>:</strong> {{!render_markdown_links(comment["body"])}} <small class="muted">{{comment["created_at"]}}</small></p>
-        </article>
+        % include("comment.tpl", comment=comment)
       % end
     </div>
   % else:

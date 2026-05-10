@@ -314,6 +314,18 @@ button, .button {
 .repo-card strong, .repo-card span, .repo-card small, .clone-box code { display: block; }
 .markdown-body { overflow-x: auto; }
 .markdown-body img { max-width: 100%; }
+.markdown-body code {
+  padding: .12rem .28rem;
+  border-radius: .25rem;
+  background: var(--soft-surface);
+  font: .9em/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+.markdown-body pre code {
+  display: block;
+  padding: 0;
+  background: transparent;
+  font: inherit;
+}
 .grid.two { display: grid; grid-template-columns: 1fr 18rem; gap: 2rem; }
 .meta-list { display: grid; grid-template-columns: 8rem 1fr; gap: .35rem 1rem; }
 .meta-list dt { color: var(--muted); }
@@ -323,8 +335,19 @@ button, .button {
 .activity-title, .activity-detail { margin-bottom: .25rem; }
 .activity-detail { color: var(--detail); }
 .comment-list { display: grid; gap: 1rem; }
-.comment { border-bottom: 1px solid var(--soft-border); }
+.comment { padding-bottom: 1rem; border-bottom: 1px solid var(--soft-border); }
 .comment, .activity-feed li { min-width: 0; }
+.comment-meta {
+  display: flex;
+  gap: .5rem;
+  align-items: baseline;
+  margin-bottom: .35rem;
+}
+.comment-body {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.comment-body > :last-child { margin-bottom: 0; }
 .comment p, .activity-title, .activity-detail {
   font-size: 1rem;
   line-height: 1.6;

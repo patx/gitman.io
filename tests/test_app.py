@@ -449,6 +449,12 @@ def test_render_markdown_strips_scripts_and_unsafe_links():
 | A |
 | - |
 | B |
+
+Inline `print('code')`.
+
+```
+print('block')
+```
 """
     )
 
@@ -457,6 +463,8 @@ def test_render_markdown_strips_scripts_and_unsafe_links():
     assert "javascript:" not in rendered.lower()
     assert 'href="https://example.com"' in rendered
     assert "<table>" in rendered
+    assert "<code>print('code')</code>" in rendered
+    assert "<pre><code>print('block')" in rendered
 
 
 def test_render_markdown_links_allows_only_links():
@@ -2255,9 +2263,14 @@ def test_bottle_issue_routes_create_comment_close_and_reopen(isolated_app):
     assert response.status_code == 200
     assert "Comment body is required." in response.text
 
-    response = client.post("/alice/demo/issues/1", {"action": "comment", "body": "I can reproduce this"})
+    comment_body = "I can reproduce this\n\n`print('code')`\n\n```\nprint('block')\n```"
+    response = client.post("/alice/demo/issues/1", {"action": "comment", "body": comment_body})
     assert response.status_code == 303
-    assert "I can reproduce this" in client.get("/alice/demo/issues/1").text
+    issue_response = client.get("/alice/demo/issues/1")
+    assert "I can reproduce this" in issue_response.text
+    assert 'class="comment-body markdown-body"' in issue_response.text
+    assert "<code>print('code')</code>" in issue_response.text
+    assert "<pre><code>print('block')" in issue_response.text
 
     response = client.post("/alice/demo/issues/1", {"action": "close"})
     assert response.status_code == 303
