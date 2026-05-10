@@ -14,13 +14,13 @@
 
 <section class="panel">
   <div class="panel-heading">
-      <form class="repo-search-form" action="/{{repo['owner_username']}}/{{repo['name']}}/issues" method="get" role="search">
+      <form class="repo-search-form" action="/{{repo['owner_username']}}/{{repo['name']}}/issues" method="get" role="search" data-live-search-form data-live-search-results="#issue-search-results" data-live-search-filters="#issue-search-filters" data-live-search-default-status="open">
         <input type="hidden" name="status" value="{{status}}">
         <label class="sr-only" for="issue-search-input">Search issues</label>
-        <input id="issue-search-input" class="repo-search-input" type="search" name="q" value="{{q}}" placeholder="Search issues" autocomplete="off">
+        <input id="issue-search-input" class="repo-search-input" type="search" name="q" value="{{q}}" placeholder="Search issues" autocomplete="off" data-live-search-input>
         <button class="sr-only" type="submit">Search issues</button>
       </form>
-    <div class="filters">
+    <div id="issue-search-filters" class="filters" data-live-search-filters>
       <a class="{{'active' if status == 'open' else ''}}" href="{{current_url_with_params(status='open')}}">Open ({{counts["open"]}})</a>
       <a class="{{'active' if status == 'closed' else ''}}" href="{{current_url_with_params(status='closed')}}">Closed ({{counts["closed"]}})</a>
       <a class="{{'active' if status == 'all' else ''}}" href="{{current_url_with_params(status='all')}}">All</a>
@@ -34,21 +34,23 @@
       % end
     </div>
   </div>
-  % if issues:
-    <ul class="issue-list" data-paginated-list>
-      % for issue in issues:
-        <li>
-          <a href="/{{repo['owner_username']}}/{{repo['name']}}/issues/{{issue['number']}}">#{{issue["number"]}} {{issue["title"]}}</a> <span>({{issue["status"]}})</span>
-        </li>
-      % end
-    </ul>
-    % include("pagination.tpl", pagination=pagination)
-  % else:
-    % if q:
-      <p class="empty">No {{issue_scope}} matching "{{q}}".</p>
+  <div id="issue-search-results" style="margin-top:25px;" data-live-search-results aria-live="polite">
+    % if issues:
+      <ul class="issue-list" data-paginated-list>
+        % for issue in issues:
+          <li>
+            <a href="/{{repo['owner_username']}}/{{repo['name']}}/issues/{{issue['number']}}">#{{issue["number"]}} {{issue["title"]}}</a> <span>({{issue["status"]}})</span>
+          </li>
+        % end
+      </ul>
+      % include("pagination.tpl", pagination=pagination)
     % else:
-      <p class="empty">No {{issue_scope}}.</p>
+      % if q:
+        <p class="empty">No {{issue_scope}} matching "{{q}}".</p>
+      % else:
+        <p class="empty">No {{issue_scope}}.</p>
+      % end
+      % include("pagination.tpl", pagination=pagination)
     % end
-    % include("pagination.tpl", pagination=pagination)
-  % end
+  </div>
 </section>

@@ -14,13 +14,13 @@
 
 <section class="panel">
   <div class="panel-heading">
-      <form class="repo-search-form" action="/{{repo['owner_username']}}/{{repo['name']}}/pulls" method="get" role="search">
+      <form class="repo-search-form" action="/{{repo['owner_username']}}/{{repo['name']}}/pulls" method="get" role="search" data-live-search-form data-live-search-results="#pull-request-search-results" data-live-search-filters="#pull-request-search-filters" data-live-search-default-status="open">
         <input type="hidden" name="status" value="{{status}}">
         <label class="sr-only" for="pull-request-search-input">Search pull requests</label>
-        <input id="pull-request-search-input" class="repo-search-input" type="search" name="q" value="{{q}}" placeholder="Search pull requests" autocomplete="off">
+        <input id="pull-request-search-input" class="repo-search-input" type="search" name="q" value="{{q}}" placeholder="Search pull requests" autocomplete="off" data-live-search-input>
         <button class="sr-only" type="submit">Search pull requests</button>
       </form>
-    <div class="filters">
+    <div id="pull-request-search-filters" class="filters" data-live-search-filters>
       <a class="{{'active' if status == 'open' else ''}}" href="{{current_url_with_params(status='open')}}">Open ({{counts["open"]}})</a>
       <a class="{{'active' if status == 'merged' else ''}}" href="{{current_url_with_params(status='merged')}}">Merged ({{counts["merged"]}})</a>
       <a class="{{'active' if status == 'closed' else ''}}" href="{{current_url_with_params(status='closed')}}">Closed ({{counts["closed"]}})</a>
@@ -35,22 +35,24 @@
       % end
     </div>
   </div>
-  % if pull_requests:
-    <ul class="issue-list" data-paginated-list>
-      % for pr in pull_requests:
-        <li>
-          <a href="/{{repo['owner_username']}}/{{repo['name']}}/pulls/{{pr['number']}}">#{{pr["number"]}} {{pr["title"]}}</a>
-          <span>({{pr["status"]}} from {{pr["source_owner_username"]}}/{{pr["source_repo_name"]}} {{format_ref_label(pr["source_ref_type"], pr["source_ref_name"])}} into {{format_ref_label(pr["target_ref_type"], pr["target_ref_name"])}})</span>
-        </li>
-      % end
-    </ul>
-    % include("pagination.tpl", pagination=pagination)
-  % else:
-    % if q:
-      <p class="empty">No {{pull_request_scope}} matching "{{q}}".</p>
+  <div id="pull-request-search-results" style="margin-top:25px;" data-live-search-results aria-live="polite">
+    % if pull_requests:
+      <ul class="issue-list" data-paginated-list>
+        % for pr in pull_requests:
+          <li>
+            <a href="/{{repo['owner_username']}}/{{repo['name']}}/pulls/{{pr['number']}}">#{{pr["number"]}} {{pr["title"]}}</a>
+            <span>({{pr["status"]}} from {{pr["source_owner_username"]}}/{{pr["source_repo_name"]}} {{format_ref_label(pr["source_ref_type"], pr["source_ref_name"])}} into {{format_ref_label(pr["target_ref_type"], pr["target_ref_name"])}})</span>
+          </li>
+        % end
+      </ul>
+      % include("pagination.tpl", pagination=pagination)
     % else:
-      <p class="empty">No {{pull_request_scope}}.</p>
+      % if q:
+        <p class="empty">No {{pull_request_scope}} matching "{{q}}".</p>
+      % else:
+        <p class="empty">No {{pull_request_scope}}.</p>
+      % end
+      % include("pagination.tpl", pagination=pagination)
     % end
-    % include("pagination.tpl", pagination=pagination)
-  % end
+  </div>
 </section>

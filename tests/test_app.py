@@ -1461,6 +1461,9 @@ def test_issue_list_searches_and_paginates_results(isolated_app, monkeypatch):
     assert "#2 Memory leak 2" in first.text
     assert "#1 Memory leak 1" not in first.text
     assert "Unrelated report" not in first.text
+    assert 'data-live-search-form' in first.text
+    assert 'data-live-search-input' in first.text
+    assert 'id="issue-search-results" style="margin-top:25px;"' in first.text
     assert 'data-paginated-list' in first.text
     assert 'data-next-url="/alice/demo/issues?q=memory&amp;page=2"' in first.text
     assert 'href="/alice/demo/issues?q=memory&amp;status=closed"' in first.text
@@ -2304,6 +2307,9 @@ def test_pull_request_list_searches_and_paginates_results(isolated_app, monkeypa
     assert "#2 Feature search 2" in first.text
     assert "#1 Feature search 1" not in first.text
     assert "Maintenance cleanup" not in first.text
+    assert 'data-live-search-form' in first.text
+    assert 'data-live-search-input' in first.text
+    assert 'id="pull-request-search-results" style="margin-top:25px;"' in first.text
     assert 'data-paginated-list' in first.text
     assert 'data-next-url="/alice/demo/pulls?q=feature&amp;page=2"' in first.text
     assert 'href="/alice/demo/pulls?q=feature&amp;status=merged"' in first.text

@@ -464,64 +464,176 @@
   </script>
   <script>
     (() => {
-      const pager = document.querySelector("[data-pagination]");
-      const list = document.querySelector("[data-paginated-list]");
-      if (!pager || !list) return;
+      const forms = document.querySelectorAll("[data-live-search-form]");
+      if (!forms.length) return;
 
-      let loading = false;
-
-      const setLoading = (isLoading) => {
-        loading = isLoading;
-        const status = pager.querySelector("[data-pagination-status]");
-        if (status) status.hidden = !isLoading;
+      const importChildren = (target, source) => {
+        target.replaceChildren(
+          ...Array.from(source.childNodes).map((child) => document.importNode(child, true))
+        );
       };
 
-      const loadNextPage = () => {
-        const nextUrl = pager.dataset.nextUrl;
-        if (loading || !nextUrl) return;
-        setLoading(true);
+      forms.forEach((form) => {
+        const input = form.querySelector("[data-live-search-input]");
+        const resultsSelector = form.dataset.liveSearchResults;
+        const filtersSelector = form.dataset.liveSearchFilters;
+        const results = resultsSelector ? document.querySelector(resultsSelector) : null;
+        if (!input || !results) return;
 
-        fetch(nextUrl, { headers: { Accept: "text/html" } })
-          .then((response) => {
-            if (!response.ok) throw new Error("Unable to load the next page.");
-            return response.text();
-          })
-          .then((html) => {
-            const doc = new DOMParser().parseFromString(html, "text/html");
-            const nextList = doc.querySelector("[data-paginated-list]");
-            const nextPager = doc.querySelector("[data-pagination]");
-            if (!nextList) throw new Error("Next page has no list.");
+        let searchTimeout = null;
+        let activeToken = 0;
 
-            Array.from(nextList.children).forEach((item) => {
-              list.appendChild(document.importNode(item, true));
+        const buildSearchUrl = () => {
+          const url = new URL(form.getAttribute("action") || window.location.href, window.location.origin);
+          const defaultStatus = form.dataset.liveSearchDefaultStatus || "";
+          url.search = "";
+
+          new FormData(form).forEach((value, key) => {
+            const text = String(value).trim();
+            if (!text || key === "page") return;
+            if (key === "status" && text === defaultStatus) return;
+            url.searchParams.set(key, text);
+          });
+
+          return url;
+        };
+
+        const replaceSearchContent = (html) => {
+          const doc = new DOMParser().parseFromString(html, "text/html");
+          const nextResults = doc.querySelector(resultsSelector);
+          if (!nextResults) throw new Error("Search response did not include results.");
+
+          importChildren(results, nextResults);
+
+          if (filtersSelector) {
+            const filters = document.querySelector(filtersSelector);
+            const nextFilters = doc.querySelector(filtersSelector);
+            if (filters && nextFilters) importChildren(filters, nextFilters);
+          }
+
+          if (window.gitmanInitPagination) window.gitmanInitPagination(results);
+        };
+
+        const search = () => {
+          const token = activeToken + 1;
+          const url = buildSearchUrl();
+          const searchUrl = url.toString();
+          activeToken = token;
+          results.setAttribute("aria-busy", "true");
+
+          fetch(searchUrl, { headers: { Accept: "text/html" } })
+            .then((response) => {
+              if (!response.ok) throw new Error("Unable to search.");
+              return response.text();
+            })
+            .then((html) => {
+              if (activeToken !== token || buildSearchUrl().toString() !== searchUrl) return;
+              replaceSearchContent(html);
+              if (window.history && window.history.replaceState) {
+                window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+              }
+            })
+            .catch(() => {
+              if (activeToken !== token || buildSearchUrl().toString() !== searchUrl) return;
+            })
+            .finally(() => {
+              if (activeToken === token && buildSearchUrl().toString() === searchUrl) {
+                results.removeAttribute("aria-busy");
+              }
             });
+        };
 
-            if (nextPager && nextPager.dataset.nextUrl) {
-              pager.dataset.nextUrl = nextPager.dataset.nextUrl;
+        input.addEventListener("input", () => {
+          clearTimeout(searchTimeout);
+          searchTimeout = setTimeout(search, 160);
+        });
+
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          clearTimeout(searchTimeout);
+          search();
+        });
+      });
+    })();
+  </script>
+  <script>
+    (() => {
+      const initPager = (pager) => {
+        if (!pager || pager.dataset.paginationInitialized === "true") return;
+        const scope = pager.closest("[data-live-search-results]") || document;
+        const list = scope.querySelector("[data-paginated-list]");
+        if (!list) return;
+
+        pager.dataset.paginationInitialized = "true";
+        let loading = false;
+
+        const setLoading = (isLoading) => {
+          loading = isLoading;
+          const status = pager.querySelector("[data-pagination-status]");
+          if (status) status.hidden = !isLoading;
+        };
+
+        const loadNextPage = () => {
+          const nextUrl = pager.dataset.nextUrl;
+          if (loading || !nextUrl) return;
+          setLoading(true);
+
+          fetch(nextUrl, { headers: { Accept: "text/html" } })
+            .then((response) => {
+              if (!response.ok) throw new Error("Unable to load the next page.");
+              return response.text();
+            })
+            .then((html) => {
+              const doc = new DOMParser().parseFromString(html, "text/html");
+              const nextScope = scope === document
+                ? doc
+                : (scope.id ? doc.getElementById(scope.id) : doc.querySelector("[data-live-search-results]"));
+              const nextList = (nextScope || doc).querySelector("[data-paginated-list]");
+              const nextPager = (nextScope || doc).querySelector("[data-pagination]");
+              if (!nextList) throw new Error("Next page has no list.");
+
+              Array.from(nextList.children).forEach((item) => {
+                list.appendChild(document.importNode(item, true));
+              });
+
+              if (nextPager && nextPager.dataset.nextUrl) {
+                pager.dataset.nextUrl = nextPager.dataset.nextUrl;
+                setLoading(false);
+              } else {
+                pager.remove();
+              }
+            })
+            .catch(() => {
               setLoading(false);
-            } else {
-              pager.remove();
-            }
-          })
-          .catch(() => {
-            setLoading(false);
-          });
+            });
+        };
+
+        if ("IntersectionObserver" in window) {
+          const observer = new IntersectionObserver((entries) => {
+            entries.forEach((entry) => {
+              if (entry.isIntersecting) loadNextPage();
+            });
+          }, { rootMargin: "600px 0px" });
+          observer.observe(pager);
+          return;
+        }
+
+        window.addEventListener("scroll", () => {
+          const bottom = pager.getBoundingClientRect().top - window.innerHeight;
+          if (bottom < 600) loadNextPage();
+        });
       };
 
-      if ("IntersectionObserver" in window) {
-        const observer = new IntersectionObserver((entries) => {
-          entries.forEach((entry) => {
-            if (entry.isIntersecting) loadNextPage();
-          });
-        }, { rootMargin: "600px 0px" });
-        observer.observe(pager);
-        return;
-      }
+      window.gitmanInitPagination = (scope = document) => {
+        const root = scope && scope.querySelectorAll ? scope : document;
+        if (root.matches && root.matches("[data-pagination]")) {
+          initPager(root);
+          return;
+        }
+        root.querySelectorAll("[data-pagination]").forEach(initPager);
+      };
 
-      window.addEventListener("scroll", () => {
-        const bottom = pager.getBoundingClientRect().top - window.innerHeight;
-        if (bottom < 600) loadNextPage();
-      });
+      window.gitmanInitPagination();
     })();
   </script>
   <script>
