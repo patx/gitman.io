@@ -275,6 +275,16 @@ button, .button {
 }
 .ref-picker-link.active { color: var(--text); font-weight: 700; text-decoration: none; }
 .filters .active, .tabs .active { color: var(--text); font-weight: 700; text-decoration: none; }
+.list-search {
+  display: inline-flex;
+  gap: .4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.list-search input[type="search"] {
+  width: 18rem;
+  max-width: 100%;
+}
 .hero, .repo-tabs { margin-bottom: 1.5rem; }
 .eyebrow, .muted, .empty, .nav-user, .repo-card small, .issue-list span, .commit-list span, .file-list span, .clean-list span, .file-kind { color: var(--muted); }
 .repo-list, .stack, form, .clean-list, .commit-list, .file-list, .issue-list { display: grid; gap: .75rem; }

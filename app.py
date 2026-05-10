@@ -96,6 +96,8 @@ REF_PAGE_SIZE = env_int("GITMAN_REF_PAGE_SIZE", 50, minimum=1)
 PROFILE_REPO_PAGE_SIZE = env_int("GITMAN_PROFILE_REPO_PAGE_SIZE", 25, minimum=1)
 REPO_SEARCH_PAGE_SIZE = env_int("GITMAN_REPO_SEARCH_PAGE_SIZE", 25, minimum=1)
 REF_SEARCH_PAGE_SIZE = env_int("GITMAN_REF_SEARCH_PAGE_SIZE", 50, minimum=1)
+ISSUE_PAGE_SIZE = env_int("GITMAN_ISSUE_PAGE_SIZE", 25, minimum=1)
+PULL_REQUEST_PAGE_SIZE = env_int("GITMAN_PULL_REQUEST_PAGE_SIZE", 25, minimum=1)
 MAX_PAGE_SIZE = env_int("GITMAN_MAX_PAGE_SIZE", 100, minimum=1)
 GIT_BINARY = os.environ.get("GITMAN_GIT_BINARY", "git")
 PAGES_DOMAIN = os.environ.get("GITMAN_PAGES_DOMAIN", "gitman.io").strip().lower().rstrip(".")
@@ -904,6 +906,7 @@ def render(template_name, **context):
     context.setdefault("url_with_ref", url_with_ref)
     context.setdefault("current_url_with_ref", current_url_with_ref)
     context.setdefault("current_url_with_page", current_url_with_page)
+    context.setdefault("current_url_with_params", current_url_with_params)
     context.setdefault("ref_option_label", ref_option_label)
     return template(template_name, **context)
 
@@ -982,6 +985,20 @@ def current_url_with_page(page):
     params = [(key, value) for key, value in request.query.allitems() if key != "page"]
     if page > 1:
         params.append(("page", str(page)))
+    encoded = urlencode(params)
+    return request.path + (f"?{encoded}" if encoded else "")
+
+
+def current_url_with_params(**updates):
+    params = [
+        (key, value)
+        for key, value in request.query.allitems()
+        if key not in updates and key != "page"
+    ]
+    for key, value in updates.items():
+        if value is None:
+            continue
+        params.append((key, str(value)))
     encoded = urlencode(params)
     return request.path + (f"?{encoded}" if encoded else "")
 
@@ -3672,14 +3689,55 @@ def pull_request_counts(repo_id):
     return counts
 
 
-def list_issues(repo_id, status="open"):
-    if status not in {"open", "closed", "all"}:
-        status = "open"
+def bounded_search_query(query):
+    return (query or "").strip()[:100]
+
+
+def escape_like_term(value):
+    return (value or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def like_pattern(value):
+    return f"%{escape_like_term(value)}%"
+
+
+def normalized_issue_status(status):
+    return status if status in {"open", "closed", "all"} else "open"
+
+
+def normalized_pull_request_status(status):
+    return status if status in {"open", "closed", "merged", "all"} else "open"
+
+
+def issue_filters(repo_id, status="open", query=""):
+    status = normalized_issue_status(status)
+    query = bounded_search_query(query)
     where = "WHERE issues.repo_id = ?"
     params = [repo_id]
     if status != "all":
         where += " AND issues.status = ?"
         params.append(status)
+    if query:
+        text_pattern = like_pattern(query)
+        number_pattern = like_pattern(query[1:] if query.startswith("#") else query)
+        where += """
+            AND (
+                issues.title LIKE ? ESCAPE '\\'
+                OR issues.body LIKE ? ESCAPE '\\'
+                OR users.username LIKE ? ESCAPE '\\'
+                OR CAST(issues.number AS TEXT) LIKE ? ESCAPE '\\'
+            )
+        """
+        params.extend([text_pattern, text_pattern, text_pattern, number_pattern])
+    return where, params
+
+
+def list_issues(repo_id, status="open", query="", limit=None, offset=0):
+    where, params = issue_filters(repo_id, status, query)
+    pagination = ""
+    if limit is not None:
+        pagination = "LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
     with db_connect() as conn:
         return conn.execute(
             f"""
@@ -3688,9 +3746,66 @@ def list_issues(repo_id, status="open"):
             JOIN users ON users.id = issues.author_id
             {where}
             ORDER BY issues.updated_at DESC, issues.number DESC
+            {pagination}
             """,
             params,
         ).fetchall()
+
+
+def issue_result_count(repo_id, status="open", query=""):
+    where, params = issue_filters(repo_id, status, query)
+    with db_connect() as conn:
+        return conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM issues
+            JOIN users ON users.id = issues.author_id
+            {where}
+            """,
+            params,
+        ).fetchone()[0]
+
+
+def pull_request_filters(repo_id, status="open", query=""):
+    status = normalized_pull_request_status(status)
+    query = bounded_search_query(query)
+    where = "WHERE pull_requests.target_repo_id = ?"
+    params = [repo_id]
+    if status != "all":
+        where += " AND pull_requests.status = ?"
+        params.append(status)
+    if query:
+        text_pattern = like_pattern(query)
+        number_pattern = like_pattern(query[1:] if query.startswith("#") else query)
+        where += """
+            AND (
+                pull_requests.title LIKE ? ESCAPE '\\'
+                OR pull_requests.body LIKE ? ESCAPE '\\'
+                OR author.username LIKE ? ESCAPE '\\'
+                OR source_owner.username LIKE ? ESCAPE '\\'
+                OR source_repo.name LIKE ? ESCAPE '\\'
+                OR target_owner.username LIKE ? ESCAPE '\\'
+                OR target_repo.name LIKE ? ESCAPE '\\'
+                OR pull_requests.source_ref_name LIKE ? ESCAPE '\\'
+                OR pull_requests.target_ref_name LIKE ? ESCAPE '\\'
+                OR CAST(pull_requests.number AS TEXT) LIKE ? ESCAPE '\\'
+            )
+        """
+        params.extend(
+            [
+                text_pattern,
+                text_pattern,
+                text_pattern,
+                text_pattern,
+                text_pattern,
+                text_pattern,
+                text_pattern,
+                text_pattern,
+                text_pattern,
+                number_pattern,
+            ]
+        )
+    return where, params
 
 
 def get_issue(repo_id, number):
@@ -3769,19 +3884,40 @@ def pull_request_select_sql(where_clause):
     """
 
 
-def list_pull_requests(repo_id, status="open"):
-    if status not in {"open", "closed", "merged", "all"}:
-        status = "open"
-    where = "WHERE pull_requests.target_repo_id = ?"
-    params = [repo_id]
-    if status != "all":
-        where += " AND pull_requests.status = ?"
-        params.append(status)
+def list_pull_requests(repo_id, status="open", query="", limit=None, offset=0):
+    where, params = pull_request_filters(repo_id, status, query)
+    pagination = ""
+    if limit is not None:
+        pagination = "LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
     with db_connect() as conn:
         return conn.execute(
-            pull_request_select_sql(where) + " ORDER BY pull_requests.updated_at DESC, pull_requests.number DESC",
+            pull_request_select_sql(where)
+            + f"""
+            ORDER BY pull_requests.updated_at DESC, pull_requests.number DESC
+            {pagination}
+            """,
             params,
         ).fetchall()
+
+
+def pull_request_result_count(repo_id, status="open", query=""):
+    where, params = pull_request_filters(repo_id, status, query)
+    with db_connect() as conn:
+        return conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM pull_requests
+            JOIN users AS author ON author.id = pull_requests.author_id
+            JOIN repositories AS source_repo ON source_repo.id = pull_requests.source_repo_id
+            JOIN users AS source_owner ON source_owner.id = source_repo.owner_id
+            JOIN repositories AS target_repo ON target_repo.id = pull_requests.target_repo_id
+            JOIN users AS target_owner ON target_owner.id = target_repo.owner_id
+            LEFT JOIN users AS merged_by ON merged_by.id = pull_requests.merged_by_id
+            {where}
+            """,
+            params,
+        ).fetchone()[0]
 
 
 def get_pull_request(repo_id, number):
@@ -5037,14 +5173,26 @@ def repo_pull_requests(owner, repo_name):
     if not repo:
         abort(404, "Repository not found.")
     path = repo_path(owner, repo_name)
-    status = request.query.get("status", "open")
+    status = normalized_pull_request_status(request.query.get("status", "open"))
+    query = bounded_search_query(request.query.get("q", ""))
+    page = request_page()
+    per_page = PULL_REQUEST_PAGE_SIZE
+    total = pull_request_result_count(repo["id"], status, query)
     counts = pull_request_counts(repo["id"])
     return render(
         "pull_requests.tpl",
         repo=repo,
-        pull_requests=list_pull_requests(repo["id"], status),
-        status=status if status in {"open", "closed", "merged", "all"} else "open",
+        pull_requests=list_pull_requests(
+            repo["id"],
+            status,
+            query=query,
+            limit=per_page,
+            offset=page_offset(page, per_page),
+        ),
+        status=status,
+        q=query,
         counts=counts,
+        pagination=pagination_metadata(page, per_page, total=total),
         **repo_page_context(repo, path),
     )
 
@@ -5224,15 +5372,27 @@ def repo_issues(owner, repo_name):
     if not repo:
         abort(404, "Repository not found.")
     path = repo_path(owner, repo_name)
-    status = request.query.get("status", "open")
+    status = normalized_issue_status(request.query.get("status", "open"))
+    query = bounded_search_query(request.query.get("q", ""))
+    page = request_page()
+    per_page = ISSUE_PAGE_SIZE
+    total = issue_result_count(repo["id"], status, query)
     counts = issue_counts(repo["id"])
     context = repo_page_context(repo, path)
     return render(
         "issues.tpl",
         repo=repo,
-        issues=list_issues(repo["id"], status),
-        status=status if status in {"open", "closed", "all"} else "open",
+        issues=list_issues(
+            repo["id"],
+            status,
+            query=query,
+            limit=per_page,
+            offset=page_offset(page, per_page),
+        ),
+        status=status,
+        q=query,
         counts=counts,
+        pagination=pagination_metadata(page, per_page, total=total),
         **context,
     )
 

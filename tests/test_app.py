@@ -1420,6 +1420,55 @@ def test_issue_queries_count_filter_and_order_comments(isolated_app):
     assert [comment["body"] for comment in isolated_app.list_issue_comments(issue_id)] == ["first", "second"]
 
 
+def test_issue_list_searches_and_paginates_results(isolated_app, monkeypatch):
+    monkeypatch.setattr(gitman, "ISSUE_PAGE_SIZE", 2)
+    owner = create_user("alice")
+    isolated_app.create_repository(owner, "demo", "")
+    repo = isolated_app.get_repo("alice", "demo")
+
+    with isolated_app.db_connect() as conn:
+        for number in range(1, 4):
+            timestamp = f"2030-01-01T00:00:0{number}Z"
+            conn.execute(
+                """
+                INSERT INTO issues (repo_id, author_id, number, title, body, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'open', ?, ?)
+                """,
+                (
+                    repo["id"],
+                    owner["id"],
+                    number,
+                    f"Memory leak {number}",
+                    "Only this body matches the issue search.",
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        conn.execute(
+            """
+            INSERT INTO issues (repo_id, author_id, number, title, body, status, created_at, updated_at)
+            VALUES (?, ?, 4, 'Unrelated report', '', 'open', ?, ?)
+            """,
+            (repo["id"], owner["id"], "2030-01-01T00:00:04Z", "2030-01-01T00:00:04Z"),
+        )
+    client = WsgiClient(isolated_app.app)
+
+    first = client.get("/alice/demo/issues?q=memory")
+    second = client.get("/alice/demo/issues?q=memory&page=2")
+    number_search = client.get("/alice/demo/issues?q=%231")
+
+    assert "#3 Memory leak 3" in first.text
+    assert "#2 Memory leak 2" in first.text
+    assert "#1 Memory leak 1" not in first.text
+    assert "Unrelated report" not in first.text
+    assert 'data-paginated-list' in first.text
+    assert 'data-next-url="/alice/demo/issues?q=memory&amp;page=2"' in first.text
+    assert 'href="/alice/demo/issues?q=memory&amp;status=closed"' in first.text
+    assert ">Next</a>" not in first.text
+    assert "#1 Memory leak 1" in second.text
+    assert "#1 Memory leak 1" in number_search.text
+
+
 def test_git_read_helpers_return_files_readme_commits_and_default_ref(isolated_app):
     owner = create_user("alice")
     isolated_app.create_repository(owner, "demo", "")
@@ -2189,6 +2238,78 @@ def test_bottle_issue_routes_create_comment_close_and_reopen(isolated_app):
     response = client.post("/alice/demo/issues/1", {"action": "reopen"})
     assert response.status_code == 303
     assert isolated_app.get_issue(isolated_app.get_repo("alice", "demo")["id"], 1)["status"] == "open"
+
+
+def test_pull_request_list_searches_and_paginates_results(isolated_app, monkeypatch):
+    monkeypatch.setattr(gitman, "PULL_REQUEST_PAGE_SIZE", 2)
+    owner = create_user("alice")
+    author = create_user("bob")
+    isolated_app.create_repository(owner, "demo", "")
+    isolated_app.create_repository(author, "demo-fork", "")
+    target_repo = isolated_app.get_repo("alice", "demo")
+    source_repo = isolated_app.get_repo("bob", "demo-fork")
+
+    with isolated_app.db_connect() as conn:
+        for number in range(1, 4):
+            timestamp = f"2030-01-01T00:00:0{number}Z"
+            conn.execute(
+                """
+                INSERT INTO pull_requests (
+                    target_repo_id, source_repo_id, author_id, number, title, body, status,
+                    base_node, source_node, target_ref_type, target_ref_name, source_ref_type, source_ref_name,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, 'branch', 'main', 'branch', ?, ?, ?)
+                """,
+                (
+                    target_repo["id"],
+                    source_repo["id"],
+                    author["id"],
+                    number,
+                    f"Feature search {number}",
+                    "Please review the feature search work.",
+                    "a" * 40,
+                    "b" * 40,
+                    f"feature/search-{number}",
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        conn.execute(
+            """
+            INSERT INTO pull_requests (
+                target_repo_id, source_repo_id, author_id, number, title, body, status,
+                base_node, source_node, target_ref_type, target_ref_name, source_ref_type, source_ref_name,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, 4, 'Maintenance cleanup', '', 'open', ?, ?, 'branch', 'main', 'branch', 'chore', ?, ?)
+            """,
+            (
+                target_repo["id"],
+                source_repo["id"],
+                author["id"],
+                "a" * 40,
+                "b" * 40,
+                "2030-01-01T00:00:04Z",
+                "2030-01-01T00:00:04Z",
+            ),
+        )
+    client = WsgiClient(isolated_app.app)
+
+    first = client.get("/alice/demo/pulls?q=feature")
+    second = client.get("/alice/demo/pulls?q=feature&page=2")
+    ref_search = client.get("/alice/demo/pulls?q=search-1")
+
+    assert "#3 Feature search 3" in first.text
+    assert "#2 Feature search 2" in first.text
+    assert "#1 Feature search 1" not in first.text
+    assert "Maintenance cleanup" not in first.text
+    assert 'data-paginated-list' in first.text
+    assert 'data-next-url="/alice/demo/pulls?q=feature&amp;page=2"' in first.text
+    assert 'href="/alice/demo/pulls?q=feature&amp;status=merged"' in first.text
+    assert ">Next</a>" not in first.text
+    assert "#1 Feature search 1" in second.text
+    assert "#1 Feature search 1" in ref_search.text
 
 
 def test_bottle_pull_request_routes_create_comment_forbid_and_merge(isolated_app):

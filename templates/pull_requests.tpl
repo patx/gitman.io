@@ -1,4 +1,6 @@
 % rebase("base.tpl", title=repo["owner_username"] + "/" + repo["name"] + " pull requests", user=user, error=error, notice=notice)
+% q = get("q", "")
+% pull_request_scope = "pull requests" if status == "all" else status + " pull requests"
 
 <section class="repo-header slim">
   <div>
@@ -14,10 +16,19 @@
   <div class="panel-heading">
     <h2>Pull requests</h2>
     <div class="filters">
-      <a class="{{'active' if status == 'open' else ''}}" href="?status=open">Open ({{counts["open"]}})</a>
-      <a class="{{'active' if status == 'merged' else ''}}" href="?status=merged">Merged ({{counts["merged"]}})</a>
-      <a class="{{'active' if status == 'closed' else ''}}" href="?status=closed">Closed ({{counts["closed"]}})</a>
-      <a class="{{'active' if status == 'all' else ''}}" href="?status=all">All</a>
+      <a class="{{'active' if status == 'open' else ''}}" href="{{current_url_with_params(status='open')}}">Open ({{counts["open"]}})</a>
+      <a class="{{'active' if status == 'merged' else ''}}" href="{{current_url_with_params(status='merged')}}">Merged ({{counts["merged"]}})</a>
+      <a class="{{'active' if status == 'closed' else ''}}" href="{{current_url_with_params(status='closed')}}">Closed ({{counts["closed"]}})</a>
+      <a class="{{'active' if status == 'all' else ''}}" href="{{current_url_with_params(status='all')}}">All</a>
+      <form class="list-search" action="/{{repo['owner_username']}}/{{repo['name']}}/pulls" method="get" role="search">
+        <input type="hidden" name="status" value="{{status}}">
+        <label class="sr-only" for="pull-request-search-input">Search pull requests</label>
+        <input id="pull-request-search-input" type="search" name="q" value="{{q}}" placeholder="Search pull requests" autocomplete="off">
+        <button type="submit">Search</button>
+        % if q:
+          <a href="{{current_url_with_params(q=None)}}">Clear</a>
+        % end
+      </form>
       % if user:
         <a href="/{{repo['owner_username']}}/{{repo['name']}}/pulls/new">New pull request</a>
       % else:
@@ -26,7 +37,7 @@
     </div>
   </div>
   % if pull_requests:
-    <ul class="issue-list">
+    <ul class="issue-list" data-paginated-list>
       % for pr in pull_requests:
         <li>
           <a href="/{{repo['owner_username']}}/{{repo['name']}}/pulls/{{pr['number']}}">#{{pr["number"]}} {{pr["title"]}}</a>
@@ -34,7 +45,13 @@
         </li>
       % end
     </ul>
+    % include("pagination.tpl", pagination=pagination)
   % else:
-    <p class="empty">No {{status}} pull requests.</p>
+    % if q:
+      <p class="empty">No {{pull_request_scope}} matching "{{q}}".</p>
+    % else:
+      <p class="empty">No {{pull_request_scope}}.</p>
+    % end
+    % include("pagination.tpl", pagination=pagination)
   % end
 </section>
